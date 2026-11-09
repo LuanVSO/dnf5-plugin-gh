@@ -1,4 +1,5 @@
 #include "assets.hpp"
+#include "refresh.hpp"
 #include "store.hpp"
 
 #undef NDEBUG
@@ -56,10 +57,38 @@ int main() {
     std::filesystem::remove_all(tmp);
     Store store(tmp / "state", tmp / "conf");
     Tracked t{"o", "r", "v1", true, {"foo"}};
+    assert(refresh_due(t, 100000));
+    t.last_checked = 100000;
+    assert(!refresh_due(t, 100000));
+    assert(!refresh_due(t, 100000 + REFRESH_INTERVAL - 1));
+    assert(refresh_due(t, 100000 + REFRESH_INTERVAL));
+    assert(refresh_due(t, 99999));
     store.save(t);
     auto found = store.find("o/r");
     assert(found && found->tag == "v1" && found->prerelease && found->packages.size() == 1);
-    assert(store.repo_id(t) == "gh-o_r");
+    assert(found->last_checked == 100000);
+    assert(store.repo_id(t) == "gh:o:r");
+    std::filesystem::create_directories(tmp / "conf");
+    {
+        std::ofstream old(tmp / "conf" / "gh-o_r.repo");
+        old << "[gh-o_r]\nname=test\nenabled=0\n";
+    }
+    assert(store.migrate_repo(t));
+    assert(!std::filesystem::exists(tmp / "conf" / "gh-o_r.repo"));
+    std::ifstream migrated(store.repo_file(t));
+    std::string contents((std::istreambuf_iterator<char>(migrated)), {});
+    assert(contents == "[gh:o:r]\nname=test\nenabled=0\n");
+    {
+        std::ofstream old(tmp / "conf" / "gh-o_r.repo");
+        old << "[gh-o_r]\n";
+    }
+    try {
+        store.migrate_repo(t);
+        assert(false);
+    } catch (const std::runtime_error &) {
+    }
+    assert(std::filesystem::exists(tmp / "conf" / "gh-o_r.repo"));
+    assert(std::filesystem::exists(store.repo_file(t)));
     store.remove(t);
     assert(store.list().empty());
     std::filesystem::remove_all(tmp);

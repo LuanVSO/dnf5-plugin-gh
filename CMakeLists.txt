@@ -16,6 +16,7 @@ include(GNUInstallDirs)
 add_library(ghcore STATIC
     src/assets.cpp
     src/github.cpp
+    src/refresh.cpp
     src/store.cpp)
 target_include_directories(ghcore PUBLIC src)
 target_link_libraries(ghcore PUBLIC nlohmann_json::nlohmann_json ${CURL_LIBRARIES})
@@ -27,8 +28,17 @@ target_compile_definitions(gh_cmd_plugin PRIVATE GETTEXT_DOMAIN="dnf5-plugin-gh"
 target_include_directories(gh_cmd_plugin PRIVATE ${LIBDNF5_INCLUDE_DIRS} /usr/include/dnf5)
 target_link_libraries(gh_cmd_plugin PRIVATE ghcore ${LIBDNF5_LIBRARIES})
 
+add_library(gh MODULE src/libdnf_plugin.cpp)
+set_target_properties(gh PROPERTIES PREFIX "")
+target_include_directories(gh PRIVATE ${LIBDNF5_INCLUDE_DIRS})
+target_link_libraries(gh PRIVATE ghcore ${LIBDNF5_LIBRARIES})
+
 set(DNF5_PLUGIN_DIR "${CMAKE_INSTALL_FULL_LIBDIR}/dnf5/plugins" CACHE PATH "dnf5 plugin directory")
+set(LIBDNF5_PLUGIN_DIR "${CMAKE_INSTALL_FULL_LIBDIR}/libdnf5/plugins" CACHE PATH "libdnf5 plugin directory")
+set(LIBDNF5_PLUGIN_CONFIG_DIR "${CMAKE_INSTALL_FULL_SYSCONFDIR}/dnf/libdnf5-plugins" CACHE PATH "libdnf5 plugin configuration directory")
 install(TARGETS gh_cmd_plugin LIBRARY DESTINATION ${DNF5_PLUGIN_DIR})
+install(TARGETS gh LIBRARY DESTINATION ${LIBDNF5_PLUGIN_DIR})
+install(FILES gh.conf DESTINATION ${LIBDNF5_PLUGIN_CONFIG_DIR})
 
 if(BUILD_TESTING)
     add_executable(test_core tests/test_core.cpp)

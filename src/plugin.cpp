@@ -1,15 +1,20 @@
 #include "assets.hpp"
 #include "github.hpp"
+#include "refresh.hpp"
 #include "store.hpp"
 
 #include <dnf5/context.hpp>
 #include <dnf5/iplugin.hpp>
 #include <dnf5/shared_options.hpp>
 #include <libdnf5-cli/session.hpp>
+#include <libdnf5/repo/repo_query.hpp>
+#include <libdnf5/rpm/package_query.hpp>
 
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <map>
@@ -89,12 +94,9 @@ public:
         auto & ctx = get_context();
         ctx.set_load_system_repo(true);
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::ENABLED);
-    }
-
-    void load_additional_packages() override {
+        lock = store.lock();
         Client client;
         auto arch = system_arch();
-        std::vector<std::string> files;
         for (const auto & spec : specs->get_value()) {
             auto [owner, repo] = parse_slug(spec);
             auto releases = client.fetch_releases(owner, repo);
@@ -115,18 +117,46 @@ public:
                 t.packages.push_back(rpm_package_name(a.name));
             }
             say("Using " + spec + " " + rel.tag);
-            for (auto & p : store.sync(client, t, chosen)) {
-                files.push_back(p.string());
+            store.migrate_repo(t);
+            libdnf5::repo::RepoQuery old_repos(ctx.get_base());
+            old_repos.filter_id(store.legacy_repo_id(t));
+            for (auto & repo : old_repos) {
+                repo->disable();
             }
+            auto paths = store.sync(client, t, chosen);
+            t.last_checked = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
             store.save(t);
+            libdnf5::repo::RepoQuery repos(ctx.get_base());
+            repos.filter_id(store.repo_id(t));
+            if (repos.empty()) {
+                ctx.get_base().get_repo_sack()->create_repos_from_file(store.repo_file(t).string());
+                repos = libdnf5::repo::RepoQuery(ctx.get_base());
+                repos.filter_id(store.repo_id(t));
+            }
+            if (repos.empty()) {
+                throw std::runtime_error("cannot load repository for " + spec);
+            }
+            for (auto & repo : repos) {
+                repo->enable();
+                repo->expire();
+            }
+            for (const auto & p : paths) {
+                selected.emplace_back(store.repo_id(t), p.filename().string());
+            }
         }
-        packages = get_context().get_base().get_repo_sack()->add_cmdline_packages(files);
     }
 
     void run() override {
         auto * goal = get_context().get_goal();
-        for (const auto & [path, pkg] : packages) {
-            goal->add_rpm_install(pkg);
+        for (const auto & [repo_id, filename] : selected) {
+            libdnf5::rpm::PackageQuery packages(get_context().get_base());
+            packages.filter_repo_id(repo_id);
+            packages.filter_location(filename);
+            if (packages.size() != 1) {
+                throw std::runtime_error("expected one package for " + filename + " in " + repo_id);
+            }
+            goal->add_rpm_install(*packages.begin());
         }
     }
 
@@ -134,7 +164,8 @@ private:
     std::unique_ptr<libdnf5::cli::session::StringArgumentList> specs;
     std::unique_ptr<libdnf5::cli::session::BoolOption> prerelease;
     std::unique_ptr<libdnf5::cli::session::BoolOption> all;
-    std::map<std::string, libdnf5::rpm::Package> packages;
+    std::vector<std::pair<std::string, std::string>> selected;
+    std::unique_ptr<StoreLock> lock;
 
     // Reduces the candidate assets to the ones to install, one per package name.
     std::vector<Asset> choose(const std::string & spec, const std::vector<Asset> & candidates) {
@@ -203,6 +234,7 @@ public:
     }
 
     void run() override {
+        auto lock = store.lock();
         Client client;
         auto arch = system_arch();
         auto targets = resolve_targets(specs->get_value());
@@ -213,30 +245,7 @@ public:
         int failures = 0;
         for (auto & t : targets) {
             try {
-                auto releases = client.fetch_releases(t.owner, t.repo);
-                auto idx = pick_release(releases, arch, t.prerelease);
-                if (!idx) {
-                    throw std::runtime_error("no release with an rpm for " + arch);
-                }
-                const auto & rel = releases[*idx];
-                std::vector<Asset> assets;
-                for (const auto & a : compatible_assets(rel, arch)) {
-                    if (std::find(t.packages.begin(), t.packages.end(), rpm_package_name(a.name)) != t.packages.end()) {
-                        assets.push_back(a);
-                    }
-                }
-                if (assets.empty()) {
-                    throw std::runtime_error("release " + rel.tag + " lacks the tracked packages");
-                }
-                if (rel.tag == t.tag) {
-                    say(t.slug() + ": up to date (" + t.tag + ")");
-                    continue;
-                }
-                auto old = t.tag;
-                t.tag = rel.tag;
-                store.sync(client, t, assets);
-                store.save(t);
-                say(t.slug() + ": " + old + " -> " + t.tag);
+                say(refresh_repository(store, client, t, arch));
             } catch (const std::exception & e) {
                 ++failures;
                 get_context().print_error(t.slug() + ": " + e.what());
@@ -314,6 +323,7 @@ public:
     }
 
     void run() override {
+        lock = store.lock();
         auto * goal = get_context().get_goal();
         for (const auto & t : resolve_targets(specs->get_value())) {
             for (const auto & p : t.packages) {
@@ -334,11 +344,28 @@ public:
 private:
     std::unique_ptr<libdnf5::cli::session::StringArgumentList> specs;
     std::vector<Tracked> pending;
+    std::unique_ptr<StoreLock> lock;
 };
 
 class GhPlugin : public dnf5::IPlugin {
 public:
     using IPlugin::IPlugin;
+
+    void init() override {
+        unsetenv("DNF5_GH_AUTO_REFRESH");
+        auto & command = get_context().get_argument_parser().get_command("upgrade");
+        auto previous = command.get_parse_hook_func();
+        command.set_parse_hook_func([previous](
+            auto * arg, const char * option, int argc, const char * const argv[]) {
+            if (previous && !previous(arg, option, argc, argv)) {
+                return false;
+            }
+            if (setenv("DNF5_GH_AUTO_REFRESH", "1", 1) != 0) {
+                throw std::runtime_error("cannot enable GitHub refresh for upgrade");
+            }
+            return true;
+        });
+    }
 
     dnf5::PluginAPIVersion get_api_version() const noexcept override { return dnf5::PLUGIN_API_VERSION; }
     const char * get_name() const noexcept override { return "gh"; }

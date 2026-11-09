@@ -3,16 +3,39 @@
 #include <nlohmann/json.hpp>
 
 #include <sys/wait.h>
+#include <sys/syscall.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <fstream>
+#include <linux/fs.h>
 #include <set>
 #include <stdexcept>
 
 namespace ghplugin {
 
 namespace fs = std::filesystem;
+
+StoreLock::StoreLock(const fs::path & path) : fd(open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600)) {
+    if (fd < 0) {
+        throw std::runtime_error("cannot open GitHub repository lock: " + std::string(std::strerror(errno)));
+    }
+    while (flock(fd, LOCK_EX) != 0) {
+        if (errno != EINTR) {
+            const auto message = std::string(std::strerror(errno));
+            close(fd);
+            throw std::runtime_error("cannot acquire GitHub repository lock: " + message);
+        }
+    }
+}
+
+StoreLock::~StoreLock() {
+    close(fd);
+}
 
 std::string rpm_package_name(const std::string & filename) {
     if (filename.size() < 5 || filename.compare(filename.size() - 4, 4, ".rpm") != 0) {
@@ -47,6 +70,10 @@ Store::Store(fs::path state_root, fs::path repo_conf_dir, std::string createrepo
       createrepo_cmd(std::move(createrepo_cmd)) {}
 
 std::string Store::repo_id(const Tracked & t) const {
+    return "gh:" + t.owner + ":" + t.repo;
+}
+
+std::string Store::legacy_repo_id(const Tracked & t) const {
     return "gh-" + t.owner + "_" + t.repo;
 }
 
@@ -58,10 +85,58 @@ fs::path Store::repo_file(const Tracked & t) const {
     return repo_conf_dir / (repo_id(t) + ".repo");
 }
 
+bool Store::migrate_repo(const Tracked & t) const {
+    const auto old_file = repo_conf_dir / (legacy_repo_id(t) + ".repo");
+    const auto new_file = repo_file(t);
+    if (!fs::exists(old_file)) {
+        return false;
+    }
+    if (fs::exists(new_file)) {
+        throw std::runtime_error("both old and new repository files exist for " + t.slug());
+    }
+    std::ifstream in(old_file);
+    if (!in) {
+        throw std::runtime_error("cannot read " + old_file.string());
+    }
+    auto temp = new_file;
+    temp += ".tmp";
+    std::ofstream out(temp);
+    if (!out) {
+        throw std::runtime_error("cannot write " + temp.string());
+    }
+    std::string line;
+    bool found = false;
+    while (std::getline(in, line)) {
+        if (line == "[" + legacy_repo_id(t) + "]") {
+            line = "[" + repo_id(t) + "]";
+            found = true;
+        }
+        out << line << '\n';
+    }
+    if (in.bad() || !found) {
+        throw std::runtime_error("cannot migrate repository configuration " + old_file.string());
+    }
+    out.close();
+    if (!out) {
+        throw std::runtime_error("cannot write " + temp.string());
+    }
+    fs::rename(temp, new_file);
+    fs::remove(old_file);
+    return true;
+}
+
+std::unique_ptr<StoreLock> Store::lock() const {
+    fs::create_directories(state_root);
+    return std::make_unique<StoreLock>(state_root / ".lock");
+}
+
 std::vector<Tracked> Store::list() const {
     std::vector<Tracked> out;
     std::error_code ec;
     for (const auto & e : fs::directory_iterator(state_root, ec)) {
+        if (!e.is_directory()) {
+            continue;
+        }
         std::ifstream in(e.path() / "state.json");
         if (!in) {
             continue;
@@ -74,10 +149,14 @@ std::vector<Tracked> Store::list() const {
             t.tag = j.value("tag", "");
             t.prerelease = j.value("prerelease", false);
             t.packages = j.value("packages", std::vector<std::string>{});
+            t.last_checked = j.value("last_checked", std::int64_t{0});
             out.push_back(std::move(t));
-        } catch (const nlohmann::json::exception &) {
-            continue;
+        } catch (const nlohmann::json::exception & ex) {
+            throw std::runtime_error("invalid tracking state in " + e.path().string() + ": " + ex.what());
         }
+    }
+    if (ec && ec != std::errc::no_such_file_or_directory) {
+        throw std::runtime_error("cannot read tracking directory " + state_root.string() + ": " + ec.message());
     }
     std::sort(out.begin(), out.end(), [](const Tracked & a, const Tracked & b) { return a.slug() < b.slug(); });
     return out;
@@ -95,16 +174,24 @@ std::optional<Tracked> Store::find(const std::string & slug) const {
 void Store::save(const Tracked & t) const {
     fs::create_directories(dir(t));
     nlohmann::json j{
-        {"owner", t.owner}, {"repo", t.repo}, {"tag", t.tag}, {"prerelease", t.prerelease}, {"packages", t.packages}};
-    std::ofstream out(dir(t) / "state.json");
+        {"owner", t.owner}, {"repo", t.repo}, {"tag", t.tag}, {"prerelease", t.prerelease},
+        {"packages", t.packages}, {"last_checked", t.last_checked}};
+    auto temporary = dir(t) / "state.json.tmp";
+    std::ofstream out(temporary);
     out << j.dump(2) << "\n";
     if (!out) {
         throw std::runtime_error("cannot write state for " + t.slug());
     }
+    out.close();
+    if (!out) {
+        throw std::runtime_error("cannot close state for " + t.slug());
+    }
+    fs::rename(temporary, dir(t) / "state.json");
 }
 
 void Store::remove(const Tracked & t) const {
     fs::remove(repo_file(t));
+    fs::remove(repo_conf_dir / (legacy_repo_id(t) + ".repo"));
     fs::remove_all(dir(t));
 }
 
@@ -120,7 +207,13 @@ void run_createrepo(const std::string & cmd, const fs::path & dir) {
         _exit(127);
     }
     int status = 0;
-    waitpid(pid, &status, 0);
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        throw std::runtime_error("cannot wait for " + cmd + ": " + std::strerror(errno));
+    }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         throw std::runtime_error(cmd + " failed (is createrepo_c installed?)");
     }
@@ -132,6 +225,18 @@ std::vector<fs::path> Store::sync(Client & client, const Tracked & t, const std:
     auto d = dir(t);
     fs::create_directories(d);
 
+    auto pattern = (d / ".staging-XXXXXX").string();
+    std::vector<char> buffer(pattern.begin(), pattern.end());
+    buffer.push_back('\0');
+    char * created = mkdtemp(buffer.data());
+    if (!created) {
+        throw std::runtime_error("cannot create staging directory for " + t.slug() + ": " + std::strerror(errno));
+    }
+    struct Staging {
+        fs::path path;
+        ~Staging() { std::error_code ec; fs::remove_all(path, ec); }
+    } staging{created};
+
     std::set<std::string> wanted;
     std::vector<fs::path> paths;
     for (const auto & a : assets) {
@@ -141,30 +246,59 @@ std::vector<fs::path> Store::sync(Client & client, const Tracked & t, const std:
         if (a.url.rfind("https://", 0) != 0) {
             throw std::runtime_error("refusing non-https asset url: " + a.url);
         }
-        wanted.insert(a.name);
+        if (!wanted.insert(a.name).second) {
+            throw std::runtime_error("duplicate asset name: " + a.name);
+        }
         auto p = d / a.name;
-        if (!fs::exists(p) || (a.size > 0 && static_cast<long long>(fs::file_size(p)) != a.size)) {
-            client.download(a.url, p);
+        auto staged = staging.path / a.name;
+        if (fs::exists(p)) {
+            if (a.size > 0 && static_cast<long long>(fs::file_size(p)) != a.size) {
+                throw std::runtime_error("existing RPM differs from release asset: " + p.string());
+            }
+            fs::create_hard_link(p, staged);
+        } else {
+            client.download(a.url, staged);
+            if (a.size > 0 && static_cast<long long>(fs::file_size(staged)) != a.size) {
+                throw std::runtime_error("downloaded RPM has unexpected size: " + a.name);
+            }
         }
         paths.push_back(p);
     }
-    for (const auto & e : fs::directory_iterator(d)) {
-        if (e.path().extension() == ".rpm" && !wanted.count(e.path().filename().string())) {
-            fs::remove(e.path());
+
+    run_createrepo(createrepo_cmd, staging.path);
+    for (const auto & path : paths) {
+        if (!fs::exists(path)) {
+            fs::create_hard_link(staging.path / path.filename(), path);
         }
     }
 
-    run_createrepo(createrepo_cmd, d);
-
-    std::ofstream out(repo_file(t));
-    out << "[" << repo_id(t) << "]\n"
-        << "name=GitHub releases: " << t.slug() << "\n"
-        << "baseurl=file://" << d.string() << "\n"
-        << "enabled=1\n"
-        << "gpgcheck=0\n"
-        << "metadata_expire=never\n";
-    if (!out) {
-        throw std::runtime_error("cannot write " + repo_file(t).string());
+    if (!fs::exists(repo_file(t))) {
+        auto temporary_repo = repo_file(t);
+        temporary_repo += ".tmp";
+        std::ofstream out(temporary_repo);
+        out << "[" << repo_id(t) << "]\n"
+            << "name=GitHub releases: " << t.slug() << "\n"
+            << "baseurl=file://" << d.string() << "\n"
+            << "enabled=1\n"
+            << "gpgcheck=0\n"
+            << "metadata_expire=0\n";
+        if (!out) {
+            throw std::runtime_error("cannot write " + temporary_repo.string());
+        }
+        out.close();
+        if (!out) {
+            throw std::runtime_error("cannot close " + temporary_repo.string());
+        }
+        fs::rename(temporary_repo, repo_file(t));
+    }
+    auto metadata = d / "repodata";
+    auto staged_metadata = staging.path / "repodata";
+    if (fs::exists(metadata)) {
+        if (syscall(SYS_renameat2, AT_FDCWD, metadata.c_str(), AT_FDCWD, staged_metadata.c_str(), RENAME_EXCHANGE) != 0) {
+            throw std::runtime_error("cannot replace repository metadata: " + std::string(std::strerror(errno)));
+        }
+    } else {
+        fs::rename(staged_metadata, metadata);
     }
     return paths;
 }
