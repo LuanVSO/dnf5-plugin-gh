@@ -3,8 +3,12 @@
 A dnf5 plugin that installs and updates RPMs published as GitHub release assets.
 
 Each tracked project gets a local repository under `/var/lib/dnf5-gh/<owner>_<repo>/`
-(RPMs + `createrepo_c` metadata) and a repo file `/etc/yum.repos.d/gh-<owner>_<repo>.repo`,
+(RPMs + `createrepo_c` metadata) and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
 so dnf5 resolves, upgrades and removes those packages natively.
+New installs are recorded as originating from `gh:<owner>:<repo>`. A slash
+cannot be used in a dnf repository ID. Existing `gh-<owner>_<repo>` files are
+migrated when the project is refreshed or installed again; existing installed
+package origins are not rewritten.
 
 ## Commands
 
@@ -14,6 +18,22 @@ so dnf5 resolves, upgrades and removes those packages natively.
 | `dnf5 gh-update [owner/repo...]` | Refresh tracked projects from GitHub, then run `dnf5 upgrade` to apply. |
 | `dnf5 gh-info [owner/repo...]` | Show tracked projects. |
 | `dnf5 gh-remove <owner/repo>...` | Remove the installed packages and stop tracking. |
+
+`dnf5 update` and `dnf5 upgrade` automatically check each enabled tracked
+GitHub repository at most once every 24 hours. They refresh local metadata
+before resolving the transaction and install available updates normally.
+`dnf5 gh-update` forces an immediate check, regardless of the interval.
+On a failed refresh, a warning is printed and the previous repository remains
+available; the next update retries. Old RPMs are retained to keep existing
+metadata usable.
+
+Automatic refresh requires both the dnf5 command plugin and the enabled
+libdnf5 `gh` plugin. It is skipped for non-root runs, `--cacheonly`, disabled
+repositories, and alternate installroots unless `--use-host-config` is supplied.
+With `--use-host-config`, tracked repositories and metadata are shared with the
+host. Generated local repositories use `metadata_expire=0`: dnf checks the
+local metadata on each use, while GitHub itself is queried only after the
+24-hour interval.
 
 Set `GITHUB_TOKEN` (or `GH_TOKEN`) to avoid API rate limits; use `sudo -E` to keep it.
 
@@ -29,7 +49,7 @@ may remain installed but no longer be tracked.
 
 Requires `libdnf5-devel libdnf5-cli-devel dnf5-devel libcurl-devel json-devel`; `createrepo_c` at runtime.
 
-    cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DDNF5_PLUGIN_DIR="$(rpm --eval '%{_libdir}')/dnf5/plugins"
+    cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_SYSCONFDIR=/etc -DDNF5_PLUGIN_DIR="$(rpm --eval '%{_libdir}')/dnf5/plugins"
     cmake --build build && ctest --test-dir build
     sudo cmake --install build
 
@@ -37,7 +57,7 @@ An optional isolated transaction test requires user, mount and network
 namespaces, `rpmbuild`, `createrepo_c`, `ip`, `openssl`, `curl` and Python 3.
 Pass an empty disposable directory and the built plugin:
 
-    bash tests/test_transactions.sh "$(mktemp -d)" "$PWD/build/gh_cmd_plugin.so"
+    bash tests/test_transactions.sh "$(mktemp -d)" "$PWD/build/gh_cmd_plugin.so" "$PWD/build/gh.so"
 
 The test directory is left for inspection. On systems with a different curl CA
 bundle path, set `GH_TEST_CA_BUNDLE` to that path.
