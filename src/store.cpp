@@ -1,7 +1,6 @@
 #include "store.hpp"
 
 #include <nlohmann/json.hpp>
-#include <curl/curl.h>
 
 #include <sys/wait.h>
 #include <sys/syscall.h>
@@ -151,7 +150,6 @@ std::vector<Tracked> Store::list() const {
             t.prerelease = j.value("prerelease", false);
             t.packages = j.value("packages", std::vector<std::string>{});
             t.last_checked = j.value("last_checked", std::int64_t{0});
-            t.remote_packages = j.value("remote_packages", false);
             out.push_back(std::move(t));
         } catch (const nlohmann::json::exception & ex) {
             throw std::runtime_error("invalid tracking state in " + e.path().string() + ": " + ex.what());
@@ -177,7 +175,7 @@ void Store::save(const Tracked & t) const {
     fs::create_directories(dir(t));
     nlohmann::json j{
         {"owner", t.owner}, {"repo", t.repo}, {"tag", t.tag}, {"prerelease", t.prerelease},
-        {"packages", t.packages}, {"last_checked", t.last_checked}, {"remote_packages", t.remote_packages}};
+        {"packages", t.packages}, {"last_checked", t.last_checked}};
     auto temporary = dir(t) / "state.json.tmp";
     std::ofstream out(temporary);
     out << j.dump(2) << "\n";
@@ -197,51 +195,15 @@ void Store::remove(const Tracked & t) const {
     fs::remove_all(dir(t));
 }
 
-void Store::remove_rpms(const Tracked & t) const {
-    for (const auto & entry : fs::directory_iterator(dir(t))) {
-        if (is_safe_rpm_name(entry.path().filename().string()) && entry.is_regular_file()) {
-            fs::remove(entry.path());
-        }
-    }
-}
-
 namespace {
 
-std::string asset_base_url(const std::vector<Asset> & assets) {
-    std::string base;
-    for (const auto & asset : assets) {
-        const auto slash = asset.url.rfind('/');
-        if (asset.url.rfind("https://", 0) != 0 || slash == std::string::npos || slash < 8 ||
-            asset.url.find_first_of("?#") != std::string::npos) {
-            throw std::runtime_error("unsupported release asset URL: " + asset.url);
-        }
-        const auto encoded_name = asset.url.substr(slash + 1);
-        int length = 0;
-        std::unique_ptr<char, decltype(&curl_free)> decoded(
-            curl_easy_unescape(nullptr, encoded_name.c_str(), static_cast<int>(encoded_name.size()), &length), curl_free);
-        if (!decoded || std::string(decoded.get(), length) != asset.name) {
-            throw std::runtime_error("release asset URL does not match its filename: " + asset.name);
-        }
-        const auto candidate = asset.url.substr(0, slash + 1);
-        if (!base.empty() && base != candidate) {
-            throw std::runtime_error("release asset URLs do not share a download directory");
-        }
-        base = candidate;
-    }
-    if (base.empty()) {
-        throw std::runtime_error("cannot create a repository without release assets");
-    }
-    return base;
-}
-
-void run_createrepo(const std::string & cmd, const fs::path & dir, const std::string & base_url) {
+void run_createrepo(const std::string & cmd, const fs::path & dir) {
     pid_t pid = fork();
     if (pid < 0) {
         throw std::runtime_error("fork failed");
     }
     if (pid == 0) {
-        execlp(cmd.c_str(), cmd.c_str(), "--quiet", "--no-database", "--baseurl", base_url.c_str(),
-               dir.c_str(), static_cast<char *>(nullptr));
+        execlp(cmd.c_str(), cmd.c_str(), "--quiet", "--no-database", dir.c_str(), static_cast<char *>(nullptr));
         _exit(127);
     }
     int status = 0;
@@ -260,7 +222,6 @@ void run_createrepo(const std::string & cmd, const fs::path & dir, const std::st
 }  // namespace
 
 std::vector<fs::path> Store::sync(Client & client, const Tracked & t, const std::vector<Asset> & assets) const {
-    const auto base_url = asset_base_url(assets);
     auto d = dir(t);
     fs::create_directories(d);
 
@@ -304,7 +265,7 @@ std::vector<fs::path> Store::sync(Client & client, const Tracked & t, const std:
         paths.push_back(p);
     }
 
-    run_createrepo(createrepo_cmd, staging.path, base_url);
+    run_createrepo(createrepo_cmd, staging.path);
     for (const auto & path : paths) {
         if (!fs::exists(path)) {
             fs::create_hard_link(staging.path / path.filename(), path);

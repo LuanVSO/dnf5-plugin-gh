@@ -91,6 +91,9 @@ public:
 
     void configure() override {
         require_root();
+        if (setenv("DNF5_GH_OWN_TRANSACTION", "1", 1) != 0) {
+            throw std::runtime_error("cannot mark GitHub transaction");
+        }
         auto & ctx = get_context();
         ctx.set_load_system_repo(true);
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::ENABLED);
@@ -124,7 +127,6 @@ public:
                 repo->disable();
             }
             auto paths = store.sync(client, t, chosen);
-            t.remote_packages = true;
             t.last_checked = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             store.save(t);
@@ -159,11 +161,6 @@ public:
             }
             goal->add_rpm_install(*packages.begin());
         }
-    }
-
-    void goal_resolved() override {
-        dnf5::Command::goal_resolved();
-        lock.reset();
     }
 
 private:
@@ -324,6 +321,9 @@ public:
         if (!ctx.get_transaction_store_path().empty()) {
             throw std::runtime_error("--store is not supported by gh-remove");
         }
+        if (setenv("DNF5_GH_OWN_TRANSACTION", "1", 1) != 0) {
+            throw std::runtime_error("cannot mark GitHub transaction");
+        }
         ctx.set_load_system_repo(true);
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::NONE);
     }
@@ -359,6 +359,7 @@ public:
 
     void init() override {
         unsetenv("DNF5_GH_AUTO_REFRESH");
+        unsetenv("DNF5_GH_OWN_TRANSACTION");
         auto & command = get_context().get_argument_parser().get_command("upgrade");
         auto previous = command.get_parse_hook_func();
         command.set_parse_hook_func([previous](

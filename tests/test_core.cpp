@@ -57,18 +57,6 @@ int main() {
     std::filesystem::remove_all(tmp);
     Store store(tmp / "state", tmp / "conf");
     Tracked t{"o", "r", "v1", true, {"foo"}};
-    Client client;
-    for (const auto & assets : std::vector<std::vector<Asset>>{
-             {{"foo-1-1.noarch.rpm", "http://example.test/foo-1-1.noarch.rpm"}},
-             {{"foo-1-1.noarch.rpm", "https://example.test/other.rpm"}},
-             {{"foo-1-1.noarch.rpm", "https://example.test/a/foo-1-1.noarch.rpm"},
-              {"bar-1-1.noarch.rpm", "https://example.test/b/bar-1-1.noarch.rpm"}}}) {
-        try {
-            store.sync(client, t, assets);
-            assert(false);
-        } catch (const std::runtime_error &) {
-        }
-    }
     assert(refresh_due(t, 100000));
     t.last_checked = 100000;
     assert(!refresh_due(t, 100000));
@@ -79,20 +67,6 @@ int main() {
     auto found = store.find("o/r");
     assert(found && found->tag == "v1" && found->prerelease && found->packages.size() == 1);
     assert(found->last_checked == 100000);
-    assert(!found->remote_packages);
-    t.remote_packages = true;
-    store.save(t);
-    assert(store.find("o/r")->remote_packages);
-    {
-        std::ofstream(store.dir(t) / "old-1-1.noarch.rpm") << "rpm";
-        std::ofstream(store.dir(t) / "keep.txt") << "metadata";
-        std::filesystem::create_directory(store.dir(t) / "nested");
-        std::ofstream(store.dir(t) / "nested" / "keep.rpm") << "rpm";
-    }
-    store.remove_rpms(t);
-    assert(!std::filesystem::exists(store.dir(t) / "old-1-1.noarch.rpm"));
-    assert(std::filesystem::exists(store.dir(t) / "keep.txt"));
-    assert(std::filesystem::exists(store.dir(t) / "nested" / "keep.rpm"));
     assert(store.repo_id(t) == "gh:o:r");
     std::filesystem::create_directories(tmp / "conf");
     {

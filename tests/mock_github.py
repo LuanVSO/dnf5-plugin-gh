@@ -10,8 +10,6 @@ work, arch = sys.argv[1:]
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/assets/"):
-            with open(os.path.join(work, "asset-requests"), "a") as log:
-                log.write(self.path + "\n")
             if os.path.exists(os.path.join(work, "fail-asset")):
                 self.send_error(503)
                 return
@@ -45,12 +43,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "size": os.path.getsize(path),
         }]
         if os.path.exists(os.path.join(work, "two-assets")):
-            rpm_name = f"Modrinth.Data-{version}-1.{arch}.rpm"
-            path = os.path.join(work, "fixtures", rpm_name)
+            data_name = f"Modrinth.Data-{version}-1.{arch}.rpm"
+            data_path = os.path.join(work, "fixtures", data_name)
             assets.append({
-                "name": rpm_name,
-                "browser_download_url": "https://api.github.com/assets/" + rpm_name,
-                "size": os.path.getsize(path),
+                "name": data_name,
+                "browser_download_url": "https://api.github.com/assets/" + data_name,
+                "size": os.path.getsize(data_path),
             })
         data = json.dumps([{
             "tag_name": "v" + version,

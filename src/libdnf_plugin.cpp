@@ -10,6 +10,7 @@
 #include <libdnf5/repo/repo_sack.hpp>
 #include <libdnf5/repo/config_repo.hpp>
 #include <libdnf5/rpm/package.hpp>
+#include <libdnf5/rpm/package_query.hpp>
 #include <libdnf5/transaction/transaction.hpp>
 #include <libdnf5/transaction/transaction_history.hpp>
 #include <libdnf5/transaction/transaction_item_action.hpp>
@@ -17,9 +18,11 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <map>
 #include <set>
 #include <string_view>
 
@@ -106,60 +109,107 @@ public:
     }
 
     void pre_transaction(const libdnf5::base::Transaction & transaction) override {
-        cleanup_repos.clear();
-        for (const auto & item : transaction.get_transaction_packages()) {
-            if (!libdnf5::transaction::transaction_item_action_is_inbound(item.get_action())) {
-                continue;
-            }
-            const auto package = item.get_package();
-            if (package.get_repo_id().rfind("gh:", 0) == 0 &&
-                package.get_baseurl().rfind("https://", 0) == 0) {
-                cleanup_repos.insert(package.get_repo_id());
-            }
-        }
-        if (cleanup_repos.empty()) {
-            return;
-        }
-        if (get_base().get_config().get_skip_system_repo_lock_option().get_value()) {
-            cleanup_repos.clear();
-            std::cerr << "Warning: GitHub RPM cleanup skipped because the system repository lock is disabled\n";
+        removed_packages.clear();
+        remaining_packages.clear();
+        const auto & config = get_base().get_config();
+        if (geteuid() != 0 || std::getenv("DNF5_GH_OWN_TRANSACTION") ||
+            (config.get_installroot_option().get_value() != "/" &&
+             !config.get_use_host_config_option().get_value())) {
             return;
         }
         try {
+            std::set<std::string> removed_nevras;
+            for (const auto & item : transaction.get_transaction_packages()) {
+                if (item.get_action() != libdnf5::transaction::TransactionItemAction::REMOVE) {
+                    continue;
+                }
+                const auto package = item.get_package();
+                const auto origin = package.get_from_repo_id();
+                if (origin.rfind("gh:", 0) == 0 || origin.rfind("gh-", 0) == 0) {
+                    removed_packages[origin].insert(package.get_name());
+                    removed_nevras.insert(package.get_nevra());
+                }
+            }
+            if (removed_packages.empty()) {
+                return;
+            }
+            libdnf5::rpm::PackageQuery installed(get_base());
+            installed.filter_installed();
+            for (const auto & package : installed) {
+                if (!removed_nevras.count(package.get_nevra())) {
+                    remaining_packages[package.get_from_repo_id()].insert(package.get_name());
+                }
+            }
+            for (const auto & item : transaction.get_transaction_packages()) {
+                if (libdnf5::transaction::transaction_item_action_is_inbound(item.get_action())) {
+                    const auto package = item.get_package();
+                    remaining_packages[package.get_repo_id()].insert(package.get_name());
+                }
+            }
+            if (config.get_skip_system_repo_lock_option().get_value()) {
+                removed_packages.clear();
+                std::cerr << "Warning: GitHub tracking cleanup skipped because the system repository lock is disabled\n";
+                return;
+            }
             const auto ids = get_base().get_transaction_history()->list_transaction_ids();
             previous_history_id = ids.empty() ? 0 : ids.back();
         } catch (const std::exception & ex) {
-            cleanup_repos.clear();
-            std::cerr << "Warning: cannot prepare GitHub RPM cleanup: " << ex.what() << '\n';
+            removed_packages.clear();
+            std::cerr << "Warning: cannot prepare GitHub tracking cleanup: " << ex.what() << '\n';
         }
     }
 
     void post_transaction(const libdnf5::base::Transaction &) override {
-        if (cleanup_repos.empty()) {
+        if (removed_packages.empty()) {
             return;
         }
         try {
-            // post_transaction is also called when the RPM transaction fails.
+            // This hook also runs after failed RPM transactions.
             const auto latest = get_base().get_transaction_history()->get_latest_transaction();
             if (latest.get_id() <= previous_history_id ||
                 latest.get_state() != libdnf5::transaction::TransactionState::OK) {
+                removed_packages.clear();
                 return;
             }
             ghplugin::Store store;
             auto lock = store.lock();
-            for (const auto & tracked : store.list()) {
-                if (tracked.remote_packages && cleanup_repos.count(store.repo_id(tracked))) {
-                    store.remove_rpms(tracked);
+            for (auto & tracked : store.list()) {
+                std::set<std::string> names;
+                std::set<std::string> remaining;
+                for (const auto & id : {store.repo_id(tracked), store.legacy_repo_id(tracked)}) {
+                    auto it = removed_packages.find(id);
+                    if (it != removed_packages.end()) {
+                        names.insert(it->second.begin(), it->second.end());
+                    }
+                    auto present = remaining_packages.find(id);
+                    if (present != remaining_packages.end()) {
+                        remaining.insert(present->second.begin(), present->second.end());
+                    }
+                }
+                const auto old_size = tracked.packages.size();
+                std::erase_if(tracked.packages, [&](const auto & name) {
+                    return names.count(name) != 0 && remaining.count(name) == 0;
+                });
+                if (tracked.packages.size() == old_size) {
+                    continue;
+                }
+                if (tracked.packages.empty()) {
+                    store.remove(tracked);
+                    std::cerr << "GitHub: stopped tracking " << tracked.slug() << '\n';
+                } else {
+                    store.save(tracked);
+                    std::cerr << "GitHub: updated tracked packages for " << tracked.slug() << '\n';
                 }
             }
         } catch (const std::exception & ex) {
-            std::cerr << "Warning: cannot clean up GitHub RPMs: " << ex.what() << '\n';
+            std::cerr << "Warning: cannot update GitHub tracking after removal: " << ex.what() << '\n';
         }
-        cleanup_repos.clear();
+        removed_packages.clear();
     }
 
 private:
-    std::set<std::string> cleanup_repos;
+    std::map<std::string, std::set<std::string>> removed_packages;
+    std::map<std::string, std::set<std::string>> remaining_packages;
     std::int64_t previous_history_id = 0;
 };
 

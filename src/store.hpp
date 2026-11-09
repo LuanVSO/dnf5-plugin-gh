@@ -19,7 +19,6 @@ struct Tracked {
     bool prerelease = false;
     std::vector<std::string> packages;  // rpm package names to follow (not file names)
     std::int64_t last_checked = 0;
-    bool remote_packages = false;
 
     std::string slug() const { return owner + "/" + repo; }
 };
@@ -58,7 +57,6 @@ public:
     std::optional<Tracked> find(const std::string & slug) const;
     void save(const Tracked & t) const;
     void remove(const Tracked & t) const;
-    void remove_rpms(const Tracked & t) const;
 
     // Makes the local repo contain exactly `assets` (downloads missing, drops stale), regenerates
     // metadata and writes the dnf repo file. Returns the paths of the rpm files in the repo.

@@ -39,10 +39,9 @@ std::string refresh_repository(Store & store, Client & client, Tracked & tracked
         throw std::runtime_error("release " + release.tag + " lacks the tracked packages");
     }
     auto old = tracked.tag;
-    if (release.tag != old || !tracked.remote_packages) {
+    if (release.tag != old) {
         store.sync(client, tracked, assets);
         tracked.tag = release.tag;
-        tracked.remote_packages = true;
     }
     tracked.last_checked = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
