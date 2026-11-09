@@ -1,6 +1,6 @@
 Name:           dnf5-plugin-gh
-Version:        0.1.0
-Release:        2%{?dist}
+Version:        0.1.1
+Release:        1%{?dist}
 Summary:        DNF5 plugin to install and update RPMs from GitHub releases
 
 # FIXME: confirm the license once a LICENSE file is added to the project
@@ -47,6 +47,9 @@ install -d %{buildroot}%{_sharedstatedir}/dnf5-gh
 %dir %{_sharedstatedir}/dnf5-gh
 
 %changelog
+* Mon Nov 09 2026 dnf5-plugin-gh contributors - 0.1.1-1
+- Stop tracking GitHub packages removed through dnf
+
 * Mon Nov 09 2026 dnf5-plugin-gh contributors - 0.1.0-2
 - Refresh GitHub repositories automatically during updates
 

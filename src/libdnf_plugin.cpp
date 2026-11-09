@@ -29,7 +29,7 @@
 namespace {
 
 std::exception_ptr last_exception;
-constexpr libdnf5::plugin::Version VERSION{0, 1, 0};
+constexpr libdnf5::plugin::Version VERSION{0, 1, 1};
 constexpr const char * ATTRIBUTES[]{nullptr};
 
 class GhLibdnfPlugin : public libdnf5::plugin::IPlugin {

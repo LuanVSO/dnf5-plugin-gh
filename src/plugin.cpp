@@ -30,7 +30,7 @@ namespace {
 
 std::exception_ptr last_exception;
 
-constexpr dnf5::PluginVersion PLUGIN_VERSION{.major = 0, .minor = 1, .micro = 0};
+constexpr dnf5::PluginVersion PLUGIN_VERSION{.major = 0, .minor = 1, .micro = 1};
 constexpr const char * attrs[]{"author.name", "author.email", "description", nullptr};
 constexpr const char * attrs_value[]{"dnf5-plugin-gh contributors", "", "Install and update RPMs from GitHub releases"};
 
