@@ -3,7 +3,7 @@
 A dnf5 plugin that installs and updates RPMs published as GitHub release assets.
 
 Each tracked project gets a local repository under `/var/lib/dnf5-gh/<owner>_<repo>/`
-(RPMs + `createrepo_c` metadata) and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
+(`createrepo_c` metadata and temporary RPMs) and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
 so dnf5 resolves, upgrades and removes those packages natively.
 New installs are recorded as originating from `gh:<owner>:<repo>`. A slash
 cannot be used in a dnf repository ID. Existing `gh-<owner>_<repo>` files are
@@ -23,9 +23,20 @@ package origins are not rewritten.
 GitHub repository at most once every 24 hours. They refresh local metadata
 before resolving the transaction and install available updates normally.
 `dnf5 gh-update` forces an immediate check, regardless of the interval.
-On a failed refresh, a warning is printed and the previous repository remains
-available; the next update retries. Old RPMs are retained to keep existing
-metadata usable.
+On a failed refresh, a warning is printed and the previous repository metadata
+remains available; the next update retries. Metadata points to GitHub release
+assets, so a package whose RPM is no longer cached requires network access.
+
+After a successful transaction that installs or updates packages from a GitHub
+repository, the enabled libdnf5 `gh` plugin removes RPMs from that local
+repository. Metadata is retained, and dnf can download the assets again when
+needed. Stored, cancelled, and failed transactions do not trigger cleanup.
+DNF's own package cache is managed separately by its `keepcache` setting.
+Cleanup is skipped with a warning if the system repository lock is disabled.
+Older repositories are converted to remote asset locations on their next
+successful refresh or `gh-install`; until then their RPMs are retained.
+The release asset URLs must share a download directory and end with the
+corresponding asset filenames, as GitHub release download URLs do.
 
 Automatic refresh requires both the dnf5 command plugin and the enabled
 libdnf5 `gh` plugin. It is skipped for non-root runs, `--cacheonly`, disabled

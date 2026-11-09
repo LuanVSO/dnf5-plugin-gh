@@ -124,6 +124,7 @@ public:
                 repo->disable();
             }
             auto paths = store.sync(client, t, chosen);
+            t.remote_packages = true;
             t.last_checked = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             store.save(t);
@@ -158,6 +159,11 @@ public:
             }
             goal->add_rpm_install(*packages.begin());
         }
+    }
+
+    void goal_resolved() override {
+        dnf5::Command::goal_resolved();
+        lock.reset();
     }
 
 private:

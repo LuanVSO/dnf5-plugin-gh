@@ -2,11 +2,17 @@
 #include "refresh.hpp"
 
 #include <libdnf5/base/base.hpp>
+#include <libdnf5/base/transaction.hpp>
+#include <libdnf5/base/transaction_package.hpp>
 #include <libdnf5/conf/config_main.hpp>
 #include <libdnf5/plugin/iplugin.hpp>
 #include <libdnf5/repo/repo_query.hpp>
 #include <libdnf5/repo/repo_sack.hpp>
 #include <libdnf5/repo/config_repo.hpp>
+#include <libdnf5/rpm/package.hpp>
+#include <libdnf5/transaction/transaction.hpp>
+#include <libdnf5/transaction/transaction_history.hpp>
+#include <libdnf5/transaction/transaction_item_action.hpp>
 
 #include <unistd.h>
 
@@ -14,6 +20,7 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <set>
 #include <string_view>
 
 namespace {
@@ -97,6 +104,63 @@ public:
             std::cerr << "Warning: GitHub refresh failed: " << ex.what() << '\n';
         }
     }
+
+    void pre_transaction(const libdnf5::base::Transaction & transaction) override {
+        cleanup_repos.clear();
+        for (const auto & item : transaction.get_transaction_packages()) {
+            if (!libdnf5::transaction::transaction_item_action_is_inbound(item.get_action())) {
+                continue;
+            }
+            const auto package = item.get_package();
+            if (package.get_repo_id().rfind("gh:", 0) == 0 &&
+                package.get_baseurl().rfind("https://", 0) == 0) {
+                cleanup_repos.insert(package.get_repo_id());
+            }
+        }
+        if (cleanup_repos.empty()) {
+            return;
+        }
+        if (get_base().get_config().get_skip_system_repo_lock_option().get_value()) {
+            cleanup_repos.clear();
+            std::cerr << "Warning: GitHub RPM cleanup skipped because the system repository lock is disabled\n";
+            return;
+        }
+        try {
+            const auto ids = get_base().get_transaction_history()->list_transaction_ids();
+            previous_history_id = ids.empty() ? 0 : ids.back();
+        } catch (const std::exception & ex) {
+            cleanup_repos.clear();
+            std::cerr << "Warning: cannot prepare GitHub RPM cleanup: " << ex.what() << '\n';
+        }
+    }
+
+    void post_transaction(const libdnf5::base::Transaction &) override {
+        if (cleanup_repos.empty()) {
+            return;
+        }
+        try {
+            // post_transaction is also called when the RPM transaction fails.
+            const auto latest = get_base().get_transaction_history()->get_latest_transaction();
+            if (latest.get_id() <= previous_history_id ||
+                latest.get_state() != libdnf5::transaction::TransactionState::OK) {
+                return;
+            }
+            ghplugin::Store store;
+            auto lock = store.lock();
+            for (const auto & tracked : store.list()) {
+                if (tracked.remote_packages && cleanup_repos.count(store.repo_id(tracked))) {
+                    store.remove_rpms(tracked);
+                }
+            }
+        } catch (const std::exception & ex) {
+            std::cerr << "Warning: cannot clean up GitHub RPMs: " << ex.what() << '\n';
+        }
+        cleanup_repos.clear();
+    }
+
+private:
+    std::set<std::string> cleanup_repos;
+    std::int64_t previous_history_id = 0;
 };
 
 }  // namespace
