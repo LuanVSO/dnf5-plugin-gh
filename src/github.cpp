@@ -68,6 +68,9 @@ CurlPtr make_handle(const std::string & token, curl_slist *& headers, bool api) 
     }
     curl_easy_setopt(h.get(), CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(h.get(), CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(h.get(), CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(h.get(), CURLOPT_LOW_SPEED_LIMIT, 1024L);
+    curl_easy_setopt(h.get(), CURLOPT_LOW_SPEED_TIME, 30L);
     return h;
 }
 
