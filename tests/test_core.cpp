@@ -94,6 +94,65 @@ int main() {
     auto * tmp_created = mkdtemp(tmp_buffer.data());
     assert(tmp_created);
     std::filesystem::path tmp(tmp_created);
+
+    auto migration_old = tmp / "old-state";
+    auto migration_new = tmp / "new-state";
+    auto migration_conf = tmp / "migration-conf";
+    std::filesystem::create_directories(migration_old / "owner_repo");
+    std::ofstream(migration_old / "owner_repo" / "state.json") << R"({"owner":"owner","repo":"repo"})";
+    std::ofstream(migration_old / "preserved") << "old data";
+    std::filesystem::create_directories(migration_new);
+    std::ofstream(migration_new / "current") << "new data";
+    Store migration_store(migration_new, migration_conf, "createrepo_c", migration_old);
+    auto migration_lock = migration_store.lock();
+    auto migrated_projects = migration_store.list();
+    assert(migrated_projects.size() == 1 && migrated_projects[0].slug() == "owner/repo");
+    assert(!std::filesystem::exists(migration_old));
+    assert(std::filesystem::exists(migration_new / "owner_repo" / "state.json"));
+    assert(std::filesystem::exists(migration_new / "preserved"));
+    assert(std::filesystem::exists(migration_new / "current"));
+    std::filesystem::create_directories(migration_conf);
+    Tracked relocated{"owner", "repo"};
+    auto old_url = "file://" + (migration_old / "owner_repo").string();
+    auto new_url = "file://" + (migration_new / "owner_repo").string();
+    {
+        std::ofstream repo(migration_store.repo_file(relocated));
+        repo << "[gh:owner:repo]\n  baseurl = " << old_url << "/  \nenabled=0\n";
+    }
+    assert(!migration_store.migrate_repo(relocated));
+    {
+        std::ifstream repo(migration_store.repo_file(relocated));
+        std::string contents((std::istreambuf_iterator<char>(repo)), {});
+        assert(contents == "[gh:owner:repo]\n  baseurl = " + new_url + "/  \nenabled=0\n");
+    }
+    std::vector<std::string> urls{old_url, old_url + "/", old_url + "-other", "https://example.test/"};
+    assert(migration_store.relocate_baseurls(relocated, urls));
+    assert((urls == std::vector<std::string>{new_url, new_url + "/", old_url + "-other", "https://example.test/"}));
+    assert(!migration_store.relocate_baseurls(relocated, urls));
+    std::filesystem::remove(migration_store.repo_file(relocated));
+    {
+        std::ofstream repo(migration_conf / "gh-owner_repo.repo");
+        repo << "[gh-owner_repo]\nbaseurl=" << old_url << "\nenabled=0\n";
+    }
+    assert(migration_store.migrate_repo(relocated));
+    {
+        std::ifstream repo(migration_store.repo_file(relocated));
+        std::string contents((std::istreambuf_iterator<char>(repo)), {});
+        assert(contents == "[gh:owner:repo]\nbaseurl=" + new_url + "\nenabled=0\n");
+    }
+    assert(!std::filesystem::exists(migration_conf / "gh-owner_repo.repo"));
+    migration_lock.reset();
+    std::filesystem::create_directories(migration_old / "owner_repo");
+    std::ofstream(migration_old / "owner_repo" / "state.json") << "legacy";
+    try {
+        migration_store.lock();
+        assert(false);
+    } catch (const std::runtime_error &) {
+    }
+    assert(std::filesystem::exists(migration_old / "owner_repo" / "state.json"));
+    assert(std::filesystem::exists(migration_new / "owner_repo" / "state.json"));
+    std::filesystem::remove_all(migration_old);
+
     const auto old_github_token = std::getenv("GITHUB_TOKEN")
         ? std::optional<std::string>(std::getenv("GITHUB_TOKEN"))
         : std::nullopt;

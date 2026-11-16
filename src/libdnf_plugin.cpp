@@ -27,7 +27,7 @@
 namespace {
 
 std::exception_ptr last_exception;
-constexpr libdnf5::plugin::Version VERSION{0, 1, 1};
+constexpr libdnf5::plugin::Version VERSION{0, 1, 5};
 constexpr const char * ATTRIBUTES[]{nullptr};
 
 class GhLibdnfPlugin : public libdnf5::plugin::IPlugin {
@@ -90,6 +90,11 @@ public:
                     repos.filter_enabled(true);
                     repos.filter_type(libdnf5::repo::Repo::Type::AVAILABLE);
                     for (auto & repo : repos) {
+                        auto & baseurl = repo->get_config().get_baseurl_option();
+                        auto urls = baseurl.get_value();
+                        if (store.relocate_baseurls(t, urls)) {
+                            baseurl.set(baseurl.get_priority(), urls);
+                        }
                         if (ghplugin::refresh_due(t, now) || !store.has_remote_metadata(t)) {
                             std::cerr << "GitHub: "
                                       << ghplugin::refresh_repository(store, client, t, base.get_vars()->get_value("arch"))

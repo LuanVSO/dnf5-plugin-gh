@@ -1,5 +1,5 @@
 Name:           dnf5-plugin-gh
-Version:        0.1.3
+Version:        0.1.5
 Release:        1%{?dist}
 Summary:        DNF5 plugin to install and update RPMs from GitHub releases
 
@@ -39,16 +39,23 @@ Adds the `gh install`, `gh update`, `gh list` and `gh remove` commands.
 
 %install
 %cmake_install
-install -d %{buildroot}%{_sharedstatedir}/dnf5-gh
+install -d %{buildroot}%{_sharedstatedir}/dnf/plugins/gh
 
 %files
 %doc README.md
 %{_libdir}/dnf5/plugins/gh_cmd_plugin.so
 %{_libdir}/libdnf5/plugins/gh.so
 %config(noreplace) %{_sysconfdir}/dnf/libdnf5-plugins/gh.conf
-%dir %{_sharedstatedir}/dnf5-gh
+%dir %{_sharedstatedir}/dnf/plugins/gh
 
 %changelog
+* Mon Nov 16 2026 dnf5-plugin-gh contributors - 0.1.5-1
+- Repair repository URLs after moving local GitHub data
+
+* Mon Nov 16 2026 dnf5-plugin-gh contributors - 0.1.4-1
+- Move local repositories and tracking data to /var/lib/dnf/plugins/gh
+- Migrate data from the previous directory on first use
+
 * Mon Nov 09 2026 dnf5-plugin-gh contributors - 0.1.1-1
 - Stop tracking GitHub packages removed through dnf
 

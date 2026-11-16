@@ -15,7 +15,7 @@ if [[ -n "$(ls -A "$work")" ]]; then
     exit 1
 fi
 
-mkdir -p "$work"/{rpm,root,varlib/dnf5-gh/modrinth_code,repoconf,plugins,libplugins,libconf,fixtures}
+mkdir -p "$work"/{rpm,root,varlib/dnf5-gh/modrinth_code,varlib/dnf/plugins/gh,repoconf,plugins,libplugins,libconf,fixtures}
 cp "$plugin" "$work/plugins/gh_cmd_plugin.so"
 cp "$libplugin" "$work/libplugins/gh.so"
 cp "$test_dir/../gh.conf" "$work/libconf/gh.conf"
@@ -42,6 +42,7 @@ EOF
 rpmbuild -bb --target "$arch" --define "_topdir $work/rpm" "$work/package.spec"
 cp "$work/rpm/RPMS/$arch/modrinth-app-0.23.1-1.$arch.rpm" "$work/fixtures/Modrinth.App-0.23.1-1.$arch.rpm"
 cp "$work/fixtures/Modrinth.App-0.23.1-1.$arch.rpm" "$work/varlib/dnf5-gh/modrinth_code/"
+touch "$work/varlib/dnf5-gh/modrinth_code/migration-marker"
 sed -i 's/^Version: 0.23.1/Version: 0.23.2/' "$work/package.spec"
 rpmbuild -bb --target "$arch" --define "_topdir $work/rpm" "$work/package.spec"
 cp "$work/rpm/RPMS/$arch/modrinth-app-0.23.2-1.$arch.rpm" "$work/fixtures/Modrinth.App-0.23.2-1.$arch.rpm"
@@ -68,6 +69,9 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     mount --bind "$work/plugins" "$plugin_dir"
     mount --bind "$work/hosts" /etc/hosts
     mount --bind "$work/cert.pem" "$ca_bundle"
+    if test -e /etc/dnf/libdnf5-plugins/gh.conf; then
+        mount --bind "$work/libconf/gh.conf" /etc/dnf/libdnf5-plugins/gh.conf
+    fi
     unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy GITHUB_TOKEN GH_TOKEN
     python3 "$test_dir/mock_github.py" "$work" "$arch" &
     server=$!
@@ -84,11 +88,13 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     }
     dnf5 "${options[@]}" --nogpgcheck -y gh install --store "$work/stored" modrinth/code
     test -f "$work/stored/transaction.json"
+    test ! -e /var/lib/dnf5-gh
+    test -f /var/lib/dnf/plugins/gh/modrinth_code/migration-marker
     if rpm --root "$work/root" -q modrinth-app; then
         echo "Stored transaction unexpectedly installed the package" >&2
         exit 1
     fi
-    state=/var/lib/dnf5-gh/modrinth_code/state.json
+    state=/var/lib/dnf/plugins/gh/modrinth_code/state.json
     repo="$work/repoconf/gh:modrinth:code.repo"
     if dnf5 "${options[@]}" --assumeno gh remove modrinth/code; then
         echo "Cancelled removal of uninstalled project unexpectedly succeeded" >&2
@@ -106,17 +112,49 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     rm "$work/repoconf/gh:modrinth:code.repo"
     dnf5 "${options[@]}" --nogpgcheck -y gh install modrinth/code
     rpm --root "$work/root" -q modrinth-app
-    test -z "$(find /var/lib/dnf5-gh/modrinth_code -type f -name "*.rpm" -print)"
+    mkdir -p /var/lib/dnf5-gh
+    mv /var/lib/dnf/plugins/gh/modrinth_code /var/lib/dnf5-gh/modrinth_code
+    sed -i "s@/var/lib/dnf/plugins/gh/@/var/lib/dnf5-gh/@" "$repo"
+    dnf5 "${options[@]}" --setopt=gh:modrinth:code.skip_if_unavailable=false \
+        --setopt=cachedir="$work/migration-cache" --nogpgcheck -y update
+    test ! -e /var/lib/dnf5-gh
+    grep -q "^baseurl=file:///var/lib/dnf/plugins/gh/modrinth_code$" "$repo"
+    dnf5 "${options[@]}" --setopt=cachedir="$work/migration-cache" repoquery --available modrinth-app |
+        grep -q "modrinth-app"
+    sed -i "s@/var/lib/dnf/plugins/gh/@/var/lib/dnf5-gh/@" "$repo"
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]=0; open(p,\"w\").write(json.dumps(d))" "$state"
+    touch "$work/fail"
+    dnf5 "${options[@]}" --setopt=gh:modrinth:code.skip_if_unavailable=false \
+        --setopt=cachedir="$work/repair-cache" --nogpgcheck -y update 2>"$work/repair-refresh.log"
+    grep -q "Warning: GitHub refresh failed" "$work/repair-refresh.log"
+    rm "$work/fail"
+    grep -q "^baseurl=file:///var/lib/dnf/plugins/gh/modrinth_code$" "$repo"
+    dnf5 "${options[@]}" --setopt=cachedir="$work/repair-cache" repoquery --available modrinth-app |
+        grep -q "modrinth-app"
+    cp -a /var/lib/dnf/plugins/gh/modrinth_code /var/lib/dnf/plugins/gh/other_project
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.update(owner=\"other\", repo=\"project\"); open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/other_project/state.json
+    sed "s@gh:modrinth:code@gh:other:project@; s@/var/lib/dnf/plugins/gh/modrinth_code@/var/lib/dnf5-gh/other_project@" \
+        "$repo" > "$work/repoconf/gh:other:project.repo"
+    sed -i "s@/var/lib/dnf/plugins/gh/@/var/lib/dnf5-gh/@" "$repo"
+    dnf5 "${options[@]}" --setopt=gh:modrinth:code.skip_if_unavailable=false \
+        --setopt=gh:other:project.skip_if_unavailable=false \
+        --setopt=cachedir="$work/install-repair-cache" --nogpgcheck -y \
+        gh install --store "$work/stored-repair" modrinth/code
+    grep -q "^baseurl=file:///var/lib/dnf/plugins/gh/modrinth_code$" "$repo"
+    grep -q "^baseurl=file:///var/lib/dnf/plugins/gh/other_project$" "$work/repoconf/gh:other:project.repo"
+    rm "$work/repoconf/gh:other:project.repo"
+    rm -r /var/lib/dnf/plugins/gh/other_project
+    test -z "$(find /var/lib/dnf/plugins/gh/modrinth_code -type f -name "*.rpm" -print)"
     test "$(rpm --root "$work/root" -q --qf "%{VERSION}" modrinth-app)" = 0.23.1
     test "$(dnf5 "${options[@]}" repoquery --installed --queryformat "%{from_repo}" modrinth-app)" = "gh:modrinth:code"
-    rm /var/lib/dnf5-gh/modrinth_code/repodata/gh-assets.json
-    cp "$work/fixtures/Modrinth.App-0.23.1-1.$arch.rpm" /var/lib/dnf5-gh/modrinth_code/
+    rm /var/lib/dnf/plugins/gh/modrinth_code/repodata/gh-assets.json
+    cp "$work/fixtures/Modrinth.App-0.23.1-1.$arch.rpm" /var/lib/dnf/plugins/gh/modrinth_code/
     dnf5 "${options[@]}" --nogpgcheck -y update
-    test -f /var/lib/dnf5-gh/modrinth_code/repodata/gh-assets.json
-    test -z "$(find /var/lib/dnf5-gh/modrinth_code -type f -name "*.rpm" -print)"
+    test -f /var/lib/dnf/plugins/gh/modrinth_code/repodata/gh-assets.json
+    test -z "$(find /var/lib/dnf/plugins/gh/modrinth_code -type f -name "*.rpm" -print)"
     dnf5 "${options[@]}" gh list > "$work/list-initial.out"
     grep -q "^  packages:   modrinth-app$" "$work/list-initial.out"
-    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"packages\"]=[\"Modrinth.App\"]; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"packages\"]=[\"Modrinth.App\"]; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/modrinth_code/state.json
     dnf5 "${options[@]}" gh list > "$work/list-legacy.out"
     grep -q "^  packages:   modrinth-app$" "$work/list-legacy.out"
     grep -q "^metadata_expire=0$" "$work/repoconf/gh:modrinth:code.repo"
@@ -134,30 +172,30 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     dnf5 "${options[@]}" --nogpgcheck -y update
     test "$(wc -l < "$work/requests")" = "$before"
     test "$(rpm --root "$work/root" -q --qf "%{VERSION}" modrinth-app)" = 0.23.1
-    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/modrinth_code/state.json
     sed -i "s/metadata_expire=0/metadata_expire=never/" "$work/repoconf/gh:modrinth:code.repo"
     dnf5 "${options[@]}" --cacheonly --nogpgcheck -y update
     test "$(wc -l < "$work/requests")" = "$before"
     dnf5 "${options[@]}" --disablerepo=gh:modrinth:code --nogpgcheck -y update
     test "$(wc -l < "$work/requests")" = "$before"
-    before_metadata=$(sha256sum /var/lib/dnf5-gh/modrinth_code/repodata/repomd.xml)
-    before_state=$(sha256sum /var/lib/dnf5-gh/modrinth_code/state.json)
+    before_metadata=$(sha256sum /var/lib/dnf/plugins/gh/modrinth_code/repodata/repomd.xml)
+    before_state=$(sha256sum /var/lib/dnf/plugins/gh/modrinth_code/state.json)
     touch "$work/fail-asset"
     dnf5 "${options[@]}" --nogpgcheck -y update 2>"$work/failed-download.log"
     grep -q "Warning: GitHub refresh failed" "$work/failed-download.log"
-    test "$(sha256sum /var/lib/dnf5-gh/modrinth_code/repodata/repomd.xml)" = "$before_metadata"
-    test "$(sha256sum /var/lib/dnf5-gh/modrinth_code/state.json)" = "$before_state"
+    test "$(sha256sum /var/lib/dnf/plugins/gh/modrinth_code/repodata/repomd.xml)" = "$before_metadata"
+    test "$(sha256sum /var/lib/dnf/plugins/gh/modrinth_code/state.json)" = "$before_state"
     test "$(rpm --root "$work/root" -q --qf "%{VERSION}" modrinth-app)" = 0.23.1
-    test -z "$(find /var/lib/dnf5-gh/modrinth_code -type f -name "*.rpm" -print)"
+    test -z "$(find /var/lib/dnf/plugins/gh/modrinth_code -type f -name "*.rpm" -print)"
     rm "$work/fail-asset"
     dnf5 "${options[@]}" --nogpgcheck -y update
     test "$(rpm --root "$work/root" -q --qf "%{VERSION}" modrinth-app)" = 0.23.2
-    test ! -e "/var/lib/dnf5-gh/modrinth_code/Modrinth.App-0.23.1-1.$arch.rpm"
-    test -z "$(find /var/lib/dnf5-gh/modrinth_code -type f -name "*.rpm" -print)"
+    test ! -e "/var/lib/dnf/plugins/gh/modrinth_code/Modrinth.App-0.23.1-1.$arch.rpm"
+    test -z "$(find /var/lib/dnf/plugins/gh/modrinth_code -type f -name "*.rpm" -print)"
     test "$(wc -l < "$work/requests")" -eq "$((before + 2))"
     dnf5 "${options[@]}" --nogpgcheck -y upgrade
     test "$(wc -l < "$work/requests")" -eq "$((before + 2))"
-    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/modrinth_code/state.json
     touch "$work/fail"
     dnf5 "${options[@]}" --nogpgcheck -y update 2>"$work/failed-update.log"
     grep -q "Warning: GitHub refresh failed" "$work/failed-update.log"
@@ -169,7 +207,7 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test "$(wc -l < "$work/requests")" = "$after"
     dnf5 "${options[@]}" gh update modrinth/code
     test "$(wc -l < "$work/requests")" -eq "$((after + 1))"
-    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/modrinth_code/state.json
     dnf5 "${options[@]}" gh list > "$work/list.out"
     test "$(wc -l < "$work/requests")" -eq "$((after + 2))"
     grep -q "^modrinth/code$" "$work/list.out"
@@ -178,16 +216,16 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     grep -q "^  packages:   modrinth-app$" "$work/list.out"
     grep -q "^  repo id:    gh:modrinth:code$" "$work/list.out"
     grep -q "^  location:   " "$work/list.out"
-    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/modrinth_code/state.json
     dnf5 "${options[@]}" --nogpgcheck -y upgrade
     test "$(wc -l < "$work/requests")" -eq "$((after + 3))"
     if dnf5 "${options[@]}" -y gh remove --store "$work/stored" modrinth/code; then
         echo "gh remove --store should have failed" >&2
         exit 1
     fi
-    test -f /var/lib/dnf5-gh/modrinth_code/state.json
+    test -f /var/lib/dnf/plugins/gh/modrinth_code/state.json
     rpm --root "$work/root" -q modrinth-app
-    state=/var/lib/dnf5-gh/modrinth_code/state.json
+    state=/var/lib/dnf/plugins/gh/modrinth_code/state.json
     repo="$work/repoconf/gh:modrinth:code.repo"
     before_state=$(sha256sum "$state")
     if dnf5 "${options[@]}" --assumeno gh remove modrinth/code; then
@@ -225,7 +263,7 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     dnf5 "${options[@]}" -y gh remove modrinth/code
     test ! -e "$state"
     test ! -e "$repo"
-    test ! -d /var/lib/dnf5-gh/modrinth_code
+    test ! -d /var/lib/dnf/plugins/gh/modrinth_code
     if rpm --root "$work/root" -q modrinth-app; then
         echo "Package was not removed" >&2
         exit 1
@@ -234,12 +272,12 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     touch "$work/two-assets"
     dnf5 "${options[@]}" --nogpgcheck -y gh install --all modrinth/code
     rpm --root "$work/root" -q modrinth-app Modrinth.Data
-    state=/var/lib/dnf5-gh/modrinth_code/state.json
+    state=/var/lib/dnf/plugins/gh/modrinth_code/state.json
     repo="$work/repoconf/gh:modrinth:code.repo"
     before_state=$(sha256sum "$state")
-    cp "$work/fixtures/Modrinth.App-0.23.2-1.$arch.rpm" /var/lib/dnf5-gh/modrinth_code/stale.rpm
+    cp "$work/fixtures/Modrinth.App-0.23.2-1.$arch.rpm" /var/lib/dnf/plugins/gh/modrinth_code/stale.rpm
     dnf5 "${options[@]}" --nogpgcheck -y install "$work/fixtures/Unrelated.Test-0.23.2-1.$arch.rpm"
-    test ! -e /var/lib/dnf5-gh/modrinth_code/stale.rpm
+    test ! -e /var/lib/dnf/plugins/gh/modrinth_code/stale.rpm
     dnf5 "${options[@]}" -y remove Unrelated.Test
     test "$(sha256sum "$state")" = "$before_state"
     if dnf5 "${options[@]}" --assumeno remove modrinth-app; then
@@ -278,12 +316,12 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
         echo "Installation with a failed asset download unexpectedly succeeded" >&2
         exit 1
     fi
-    test -z "$(find /var/lib/dnf5-gh/modrinth_code -type f -name "*.rpm" -print)"
+    test -z "$(find /var/lib/dnf/plugins/gh/modrinth_code -type f -name "*.rpm" -print)"
     rm "$work/fail-asset"
     before_assets=$(wc -l < "$work/asset-requests")
     dnf5 "${options[@]}" --setopt=cachedir="$work/fresh-cache" --nogpgcheck -y install modrinth-app
     test "$(wc -l < "$work/asset-requests")" -eq "$((before_assets + 1))"
-    test -z "$(find /var/lib/dnf5-gh/modrinth_code -type f -name "*.rpm" -print)"
+    test -z "$(find /var/lib/dnf/plugins/gh/modrinth_code -type f -name "*.rpm" -print)"
     python3 -c "import json,sys; assert set(json.load(open(sys.argv[1]))[\"packages\"]) == {\"modrinth-app\", \"Modrinth.Data\"}" "$state"
     dnf5 "${options[@]}" gh update modrinth/code
     dnf5 "${options[@]}" -y remove Modrinth.Data
@@ -291,5 +329,5 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     dnf5 "${options[@]}" -y remove modrinth-app
     test ! -e "$state"
     test ! -e "$repo"
-    test ! -d /var/lib/dnf5-gh/modrinth_code
+    test ! -d /var/lib/dnf/plugins/gh/modrinth_code
 ' _ "$work" "$test_dir" "$arch" "$plugin_dir" "$ca_bundle"

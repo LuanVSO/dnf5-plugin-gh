@@ -3,8 +3,12 @@
 A dnf5 plugin that installs and updates RPMs published as GitHub release assets.
 
 Each tracked project gets local `createrepo_c` metadata under
-`/var/lib/dnf5-gh/<owner>_<repo>/` and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
+`/var/lib/dnf/plugins/gh/<owner>_<repo>/` and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
 so dnf5 resolves, upgrades and removes those packages natively.
+Data in the previous `/var/lib/dnf5-gh/` location is migrated automatically on
+the first eligible root invocation.
+Repository configurations still pointing to the old location are also repaired,
+including configurations left behind by an earlier migration.
 The metadata points to GitHub release assets: DNF downloads the packages needed
 for a transaction, and the local repository does not retain RPM files.
 New installs are recorded as originating from `gh:<owner>:<repo>`. A slash

@@ -57,14 +57,17 @@ public:
 
 class Store {
 public:
-    Store(std::filesystem::path state_root = "/var/lib/dnf5-gh",
+    Store(std::filesystem::path state_root = "/var/lib/dnf/plugins/gh",
           std::filesystem::path repo_conf_dir = "/etc/yum.repos.d",
-          std::string createrepo_cmd = "createrepo_c");
+          std::string createrepo_cmd = "createrepo_c",
+          std::filesystem::path legacy_state_root = {});
 
     std::string repo_id(const Tracked & t) const;
     std::string legacy_repo_id(const Tracked & t) const;
     std::filesystem::path dir(const Tracked & t) const;
     std::filesystem::path repo_file(const Tracked & t) const;
+    bool relocate_baseurls(const Tracked & t, std::vector<std::string> & urls) const;
+    void relocate_repo_configs(const Tracked & t) const;
     bool migrate_repo(const Tracked & t) const;
     std::unique_ptr<StoreLock> lock() const;
 
@@ -82,7 +85,11 @@ public:
         const std::filesystem::path & prepared = {}) const;
 
 private:
+    void migrate_state_root() const;
+    void relocate_repo_config(const Tracked & t, const std::filesystem::path & path) const;
+
     std::filesystem::path state_root;
+    std::filesystem::path legacy_state_root;
     std::filesystem::path repo_conf_dir;
     std::string createrepo_cmd;
 };

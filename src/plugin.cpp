@@ -11,6 +11,7 @@
 #include <libdnf5-cli/utils/userconfirm.hpp>
 #include <libdnf5/conf/config_main.hpp>
 #include <libdnf5/repo/repo_query.hpp>
+#include <libdnf5/repo/config_repo.hpp>
 #include <libdnf5/rpm/package_query.hpp>
 #include <libdnf5/transaction/transaction.hpp>
 #include <libdnf5/transaction/transaction_history.hpp>
@@ -32,7 +33,7 @@ namespace {
 
 std::exception_ptr last_exception;
 
-constexpr dnf5::PluginVersion PLUGIN_VERSION{.major = 0, .minor = 1, .micro = 1};
+constexpr dnf5::PluginVersion PLUGIN_VERSION{.major = 0, .minor = 1, .micro = 5};
 constexpr const char * attrs[]{"author.name", "author.email", "description", nullptr};
 constexpr const char * attrs_value[]{"dnf5-plugin-gh contributors", "", "Install and update RPMs from GitHub releases"};
 
@@ -103,6 +104,20 @@ public:
         ctx.set_load_system_repo(true);
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::ENABLED);
         removal.lock = store.lock();
+        for (const auto & tracked : store.list()) {
+            store.relocate_repo_configs(tracked);
+            for (const auto & id : {store.repo_id(tracked), store.legacy_repo_id(tracked)}) {
+                libdnf5::repo::RepoQuery repos(ctx.get_base());
+                repos.filter_id(id);
+                for (auto & repo : repos) {
+                    auto & baseurl = repo->get_config().get_baseurl_option();
+                    auto urls = baseurl.get_value();
+                    if (store.relocate_baseurls(tracked, urls)) {
+                        baseurl.set(baseurl.get_priority(), urls);
+                    }
+                }
+            }
+        }
         Client client;
         auto arch = ctx.get_base().get_vars()->get_value("arch");
         for (const auto & spec : specs->get_value()) {
@@ -129,6 +144,11 @@ public:
                 throw std::runtime_error("cannot load repository for " + spec);
             }
             for (auto & repo : repos) {
+                auto & baseurl = repo->get_config().get_baseurl_option();
+                auto urls = baseurl.get_value();
+                if (store.relocate_baseurls(t, urls)) {
+                    baseurl.set(baseurl.get_priority(), urls);
+                }
                 repo->enable();
                 repo->expire();
             }
@@ -263,6 +283,7 @@ public:
     }
 
     void run() override {
+        auto lock = geteuid() == 0 ? store.lock() : nullptr;
         auto targets = resolve_targets(specs->get_value());
         if (targets.empty()) {
             say("No tracked GitHub repositories.");

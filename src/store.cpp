@@ -110,10 +110,15 @@ bool is_safe_rpm_name(const std::string & filename) {
            filename.compare(filename.size() - 4, 4, ".rpm") == 0;
 }
 
-Store::Store(fs::path state_root, fs::path repo_conf_dir, std::string createrepo_cmd)
+Store::Store(fs::path state_root, fs::path repo_conf_dir, std::string createrepo_cmd, fs::path legacy_state_root)
     : state_root(std::move(state_root)),
+      legacy_state_root(std::move(legacy_state_root)),
       repo_conf_dir(std::move(repo_conf_dir)),
-      createrepo_cmd(std::move(createrepo_cmd)) {}
+      createrepo_cmd(std::move(createrepo_cmd)) {
+    if (this->legacy_state_root.empty() && this->state_root == "/var/lib/dnf/plugins/gh") {
+        this->legacy_state_root = "/var/lib/dnf5-gh";
+    }
+}
 
 std::string Store::repo_id(const Tracked & t) const {
     return REPO_ID_PREFIX + t.owner + ":" + t.repo;
@@ -131,14 +136,88 @@ fs::path Store::repo_file(const Tracked & t) const {
     return repo_conf_dir / (repo_id(t) + ".repo");
 }
 
+bool Store::relocate_baseurls(const Tracked & t, std::vector<std::string> & urls) const {
+    if (legacy_state_root.empty()) {
+        return false;
+    }
+    const auto old_url = "file://" + (legacy_state_root / (t.owner + "_" + t.repo)).string();
+    const auto new_url = "file://" + dir(t).string();
+    bool changed = false;
+    for (auto & url : urls) {
+        if (url == old_url || url == old_url + "/") {
+            url = new_url + (url.back() == '/' ? "/" : "");
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+void Store::relocate_repo_configs(const Tracked & t) const {
+    relocate_repo_config(t, repo_file(t));
+    relocate_repo_config(t, repo_conf_dir / (legacy_repo_id(t) + ".repo"));
+}
+
+void Store::relocate_repo_config(const Tracked & t, const fs::path & path) const {
+    if (!fs::exists(path)) {
+        return;
+    }
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("cannot read " + path.string());
+    }
+    std::string line;
+    std::string contents;
+    bool changed = false;
+    while (std::getline(in, line)) {
+        auto equals = line.find('=');
+        if (equals != std::string::npos) {
+            auto key = line.substr(0, equals);
+            auto first = key.find_first_not_of(" \t");
+            auto last = key.find_last_not_of(" \t");
+            if (first != std::string::npos && key.substr(first, last - first + 1) == "baseurl") {
+                auto value_start = line.find_first_not_of(" \t", equals + 1);
+                auto value_end = line.find_last_not_of(" \t\r");
+                if (value_start != std::string::npos && value_end >= value_start) {
+                    std::vector<std::string> urls{line.substr(value_start, value_end - value_start + 1)};
+                    if (relocate_baseurls(t, urls)) {
+                        line.replace(value_start, value_end - value_start + 1, urls.front());
+                        changed = true;
+                    }
+                }
+            }
+        }
+        contents += line + '\n';
+    }
+    if (in.bad()) {
+        throw std::runtime_error("cannot read " + path.string());
+    }
+    if (!changed) {
+        return;
+    }
+    auto temp = path;
+    temp += ".tmp";
+    std::ofstream out(temp);
+    if (!out) {
+        throw std::runtime_error("cannot write " + temp.string());
+    }
+    out << contents;
+    out.close();
+    if (!out) {
+        throw std::runtime_error("cannot write " + temp.string());
+    }
+    fs::permissions(temp, fs::status(path).permissions());
+    fs::rename(temp, path);
+}
+
 bool Store::migrate_repo(const Tracked & t) const {
     const auto old_file = repo_conf_dir / (legacy_repo_id(t) + ".repo");
     const auto new_file = repo_file(t);
+    if (fs::exists(old_file) && fs::exists(new_file)) {
+        throw std::runtime_error("both old and new repository files exist for " + t.slug());
+    }
+    relocate_repo_configs(t);
     if (!fs::exists(old_file)) {
         return false;
-    }
-    if (fs::exists(new_file)) {
-        throw std::runtime_error("both old and new repository files exist for " + t.slug());
     }
     std::ifstream in(old_file);
     if (!in) {
@@ -166,6 +245,7 @@ bool Store::migrate_repo(const Tracked & t) const {
     if (!out) {
         throw std::runtime_error("cannot write " + temp.string());
     }
+    fs::permissions(temp, fs::status(old_file).permissions());
     fs::rename(temp, new_file);
     fs::remove(old_file);
     return true;
@@ -173,7 +253,59 @@ bool Store::migrate_repo(const Tracked & t) const {
 
 std::unique_ptr<StoreLock> Store::lock() const {
     fs::create_directories(state_root);
-    return std::make_unique<StoreLock>(state_root / ".lock");
+    auto store_lock = std::make_unique<StoreLock>(state_root / ".lock");
+    migrate_state_root();
+    return store_lock;
+}
+
+void Store::migrate_state_root() const {
+    if (legacy_state_root.empty() || !fs::exists(legacy_state_root)) {
+        return;
+    }
+    if (!fs::is_directory(legacy_state_root)) {
+        throw std::runtime_error("legacy GitHub repository path is not a directory: " + legacy_state_root.string());
+    }
+
+    fs::create_directories(state_root.parent_path());
+    if (!fs::exists(state_root)) {
+        fs::rename(legacy_state_root, state_root);
+        return;
+    }
+    if (!fs::is_directory(state_root)) {
+        throw std::runtime_error("GitHub repository path is not a directory: " + state_root.string());
+    }
+    if (fs::is_empty(state_root)) {
+        fs::remove(state_root);
+        fs::rename(legacy_state_root, state_root);
+        return;
+    }
+
+    for (const auto & entry : fs::recursive_directory_iterator(legacy_state_root)) {
+        const auto relative = fs::relative(entry.path(), legacy_state_root);
+        const auto destination = state_root / relative;
+        if (!fs::exists(destination)) {
+            continue;
+        }
+        if (entry.is_directory() && fs::is_directory(destination)) {
+            continue;
+        }
+        if (relative == ".lock" && !entry.is_directory()) {
+            continue;
+        }
+        throw std::runtime_error("cannot migrate GitHub repository data; both paths contain " +
+                                 destination.string());
+    }
+
+    for (const auto & entry : fs::recursive_directory_iterator(legacy_state_root)) {
+        const auto relative = fs::relative(entry.path(), legacy_state_root);
+        const auto destination = state_root / relative;
+        if (entry.is_directory()) {
+            fs::create_directories(destination);
+        } else if (relative != ".lock" || !fs::exists(destination)) {
+            fs::rename(entry.path(), destination);
+        }
+    }
+    fs::remove_all(legacy_state_root);
 }
 
 std::vector<Tracked> Store::list() const {
