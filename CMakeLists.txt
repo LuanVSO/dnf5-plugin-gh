@@ -17,7 +17,8 @@ add_library(ghcore STATIC
     src/assets.cpp
     src/github.cpp
     src/refresh.cpp
-    src/store.cpp)
+    src/store.cpp
+    src/workflows.cpp)
 target_include_directories(ghcore PUBLIC src)
 target_link_libraries(ghcore PUBLIC nlohmann_json::nlohmann_json ${CURL_LIBRARIES})
 target_include_directories(ghcore PUBLIC ${CURL_INCLUDE_DIRS})

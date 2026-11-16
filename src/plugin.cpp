@@ -2,6 +2,7 @@
 #include "github.hpp"
 #include "refresh.hpp"
 #include "store.hpp"
+#include "workflows.hpp"
 
 #include <dnf5/context.hpp>
 #include <dnf5/iplugin.hpp>
@@ -12,14 +13,10 @@
 
 #include <unistd.h>
 
-#include <algorithm>
-#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
-#include <map>
 #include <memory>
-#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -101,35 +98,18 @@ public:
         Client client;
         auto arch = system_arch();
         for (const auto & spec : specs->get_value()) {
-            auto [owner, repo] = parse_slug(spec);
-            auto releases = client.fetch_releases(owner, repo);
-            auto idx = pick_release(releases, arch, prerelease->get_value());
-            if (!idx) {
-                throw std::runtime_error(
-                    "no release of " + spec + " has an rpm for " + arch +
-                    (prerelease->get_value() ? "" : " (try --prerelease)"));
-            }
-            const auto & rel = releases[*idx];
-            auto chosen = choose(spec, compatible_assets(rel, arch));
+            auto plan = fetch_install_plan(client, spec, arch, prerelease->get_value());
+            auto chosen = choose(spec, plan.candidates);
 
-            Tracked t = store.find(owner + "/" + repo).value_or(Tracked{owner, repo});
-            t.tag = rel.tag;
-            t.prerelease = prerelease->get_value();
-            t.packages.clear();
-            for (const auto & a : chosen) {
-                t.packages.push_back(rpm_package_name(a.name));
-            }
-            say("Using " + spec + " " + rel.tag);
+            Tracked t = store.find(plan.owner + "/" + plan.repo).value_or(Tracked{plan.owner, plan.repo});
+            say("Using " + spec + " " + plan.release.tag);
             store.migrate_repo(t);
             libdnf5::repo::RepoQuery old_repos(ctx.get_base());
             old_repos.filter_id(store.legacy_repo_id(t));
             for (auto & repo : old_repos) {
                 repo->disable();
             }
-            auto paths = store.sync(client, t, chosen);
-            t.last_checked = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            store.save(t);
+            auto paths = install_release(store, client, t, plan, chosen);
             libdnf5::repo::RepoQuery repos(ctx.get_base());
             repos.filter_id(store.repo_id(t));
             if (repos.empty()) {
@@ -172,13 +152,7 @@ private:
 
     // Reduces the candidate assets to the ones to install, one per package name.
     std::vector<Asset> choose(const std::string & spec, const std::vector<Asset> & candidates) {
-        std::vector<Asset> unique;
-        std::set<std::string> seen;
-        for (const auto & a : candidates) {
-            if (seen.insert(rpm_package_name(a.name)).second) {
-                unique.push_back(a);
-            }
-        }
+        auto unique = unique_package_assets(candidates);
         if (unique.size() == 1 || all->get_value()) {
             return unique;
         }
@@ -356,23 +330,6 @@ private:
 class GhPlugin : public dnf5::IPlugin {
 public:
     using IPlugin::IPlugin;
-
-    void init() override {
-        unsetenv("DNF5_GH_AUTO_REFRESH");
-        unsetenv("DNF5_GH_OWN_TRANSACTION");
-        auto & command = get_context().get_argument_parser().get_command("upgrade");
-        auto previous = command.get_parse_hook_func();
-        command.set_parse_hook_func([previous](
-            auto * arg, const char * option, int argc, const char * const argv[]) {
-            if (previous && !previous(arg, option, argc, argv)) {
-                return false;
-            }
-            if (setenv("DNF5_GH_AUTO_REFRESH", "1", 1) != 0) {
-                throw std::runtime_error("cannot enable GitHub refresh for upgrade");
-            }
-            return true;
-        });
-    }
 
     dnf5::PluginAPIVersion get_api_version() const noexcept override { return dnf5::PLUGIN_API_VERSION; }
     const char * get_name() const noexcept override { return "gh"; }

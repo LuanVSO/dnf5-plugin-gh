@@ -20,6 +20,13 @@ namespace ghplugin {
 
 namespace fs = std::filesystem;
 
+namespace {
+
+constexpr const char * REPO_ID_PREFIX = "gh:";
+constexpr const char * LEGACY_REPO_ID_PREFIX = "gh-";
+
+}  // namespace
+
 StoreLock::StoreLock(const fs::path & path) : fd(open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600)) {
     if (fd < 0) {
         throw std::runtime_error("cannot open GitHub repository lock: " + std::string(std::strerror(errno)));
@@ -58,6 +65,10 @@ std::string rpm_package_name(const std::string & filename) {
     return stem.substr(0, ver);
 }
 
+bool is_github_repo_id(const std::string & repo_id) {
+    return repo_id.rfind(REPO_ID_PREFIX, 0) == 0 || repo_id.rfind(LEGACY_REPO_ID_PREFIX, 0) == 0;
+}
+
 bool is_safe_rpm_name(const std::string & filename) {
     return !filename.empty() && filename[0] != '.' && filename.find('/') == std::string::npos &&
            filename.find('\n') == std::string::npos && filename.size() > 4 &&
@@ -70,11 +81,11 @@ Store::Store(fs::path state_root, fs::path repo_conf_dir, std::string createrepo
       createrepo_cmd(std::move(createrepo_cmd)) {}
 
 std::string Store::repo_id(const Tracked & t) const {
-    return "gh:" + t.owner + ":" + t.repo;
+    return REPO_ID_PREFIX + t.owner + ":" + t.repo;
 }
 
 std::string Store::legacy_repo_id(const Tracked & t) const {
-    return "gh-" + t.owner + "_" + t.repo;
+    return LEGACY_REPO_ID_PREFIX + t.owner + "_" + t.repo;
 }
 
 fs::path Store::dir(const Tracked & t) const {

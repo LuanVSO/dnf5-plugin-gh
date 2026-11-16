@@ -140,8 +140,11 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     dnf5 "${options[@]}" gh-update modrinth/code
     test "$(wc -l < "$work/requests")" -eq "$((after + 1))"
     python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
-    dnf5 "${options[@]}" --nogpgcheck -y upgrade
+    dnf5 "${options[@]}" gh-info modrinth/code
     test "$(wc -l < "$work/requests")" -eq "$((after + 2))"
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
+    dnf5 "${options[@]}" --nogpgcheck -y upgrade
+    test "$(wc -l < "$work/requests")" -eq "$((after + 3))"
     if dnf5 "${options[@]}" -y gh-remove --store "$work/stored" modrinth/code; then
         echo "gh-remove --store should have failed" >&2
         exit 1
@@ -180,7 +183,7 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test "$(sha256sum "$state")" = "$before_state"
     rm "$work/root/fail-gh-removal"
     dnf5 "${options[@]}" --setopt=skip_system_repo_lock=true -y remove Modrinth.App 2>"$work/skip-lock.log"
-    grep -q "GitHub tracking cleanup skipped" "$work/skip-lock.log"
+    grep -q "GitHub tracking update skipped" "$work/skip-lock.log"
     test "$(sha256sum "$state")" = "$before_state"
     dnf5 "${options[@]}" --nogpgcheck -y install Modrinth.App
     dnf5 "${options[@]}" -y remove Modrinth.App
@@ -188,8 +191,12 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test -f "$repo"
     python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[\"packages\"] == [\"Modrinth.Data\"]" "$state"
     rpm --root "$work/root" -q Modrinth.Data
+    dnf5 "${options[@]}" --nogpgcheck -y install Modrinth.App
+    python3 -c "import json,sys; assert set(json.load(open(sys.argv[1]))[\"packages\"]) == {\"Modrinth.App\", \"Modrinth.Data\"}" "$state"
     dnf5 "${options[@]}" gh-update modrinth/code
     dnf5 "${options[@]}" -y remove Modrinth.Data
+    python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[\"packages\"] == [\"Modrinth.App\"]" "$state"
+    dnf5 "${options[@]}" -y remove Modrinth.App
     test ! -e "$state"
     test ! -e "$repo"
     test ! -d /var/lib/dnf5-gh/modrinth_code

@@ -19,17 +19,17 @@ package origins are not rewritten.
 | `dnf5 gh-info [owner/repo...]` | Show tracked projects. |
 | `dnf5 gh-remove <owner/repo>...` | Remove the installed packages and stop tracking. |
 
-`dnf5 update` and `dnf5 upgrade` automatically check each enabled tracked
-GitHub repository at most once every 24 hours. They refresh local metadata
-before resolving the transaction and install available updates normally.
+Every eligible dnf5 invocation automatically checks each enabled tracked
+GitHub repository at most once every 24 hours. Repositories are refreshed
+before resolving transactions, so available updates can be installed normally.
 `dnf5 gh-update` forces an immediate check, regardless of the interval.
 On a failed refresh, a warning is printed and the previous repository remains
 available; the next update retries. Old RPMs are retained to keep existing
 metadata usable.
 
-Automatic refresh requires both the dnf5 command plugin and the enabled
-libdnf5 `gh` plugin. It is skipped for non-root runs, `--cacheonly`, disabled
-repositories, and alternate installroots unless `--use-host-config` is supplied.
+Automatic refresh requires the enabled libdnf5 `gh` plugin. It is skipped for
+non-root runs, `--cacheonly`, disabled repositories, and alternate installroots
+unless `--use-host-config` is supplied.
 With `--use-host-config`, tracked repositories and metadata are shared with the
 host. Generated local repositories use `metadata_expire=0`: dnf checks the
 local metadata on each use, while GitHub itself is queried only after the
@@ -41,14 +41,15 @@ Set `GITHUB_TOKEN` (or `GH_TOKEN`) to avoid API rate limits; use `sudo -E` to ke
 repository and records the project even though the transaction is only stored,
 not executed. `--store` is not supported by `gh-remove`.
 
-When `dnf5 remove` successfully removes a package installed from a tracked
-GitHub repository, the enabled libdnf5 `gh` plugin stops tracking that package.
-Other tracked packages from the same project remain tracked; removing the last
-one deletes the repository configuration and local tracking data. Cancelled,
-stored and failed transactions do not change tracking. Cleanup is skipped with
-a warning if the system repository lock is disabled, or for alternate
-installroots without `--use-host-config`. Existing packages recorded as
-`@commandline` cannot be identified by repository origin.
+The enabled libdnf5 `gh` plugin reconciles successful transaction installs and
+removals from tracked GitHub repositories, including transactions initiated by
+other libdnf5 clients such as PackageKit. Newly installed packages are added to
+tracking; removing the last tracked package deletes the repository configuration
+and local tracking data. Cancelled, stored and failed transactions do not change
+tracking. Tracking updates are skipped with a warning if the system repository
+lock is disabled, or for alternate installroots without `--use-host-config`.
+Existing packages recorded as `@commandline` cannot be identified by repository
+origin.
 
 **Removal caveat:** `gh-remove` currently deletes tracking data before the
 transaction is confirmed or run. If removal is cancelled or fails, the package

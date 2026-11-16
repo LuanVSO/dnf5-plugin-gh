@@ -1,6 +1,7 @@
 #include "assets.hpp"
 #include "refresh.hpp"
 #include "store.hpp"
+#include "workflows.hpp"
 
 #undef NDEBUG
 #include <cassert>
@@ -38,10 +39,15 @@ int main() {
     auto pre = pick_release(releases, "x86_64", true);
     assert(pre && releases[*pre].tag == "v3.0.0-rc1");
     assert(compatible_assets(releases[2], "ppc64le").size() == 1);
+    auto plan = make_install_plan(releases, "owner/repo", "x86_64", false);
+    assert(plan.owner == "owner" && plan.repo == "repo");
+    assert(plan.release.tag == "v2.0.0" && !plan.prerelease && plan.candidates.size() == 2);
 
     auto c = compatible_assets(releases[2], "x86_64");
     assert(c.size() == 2);
     assert(c[0].name == "foo-2.0.0-1.x86_64.rpm" && c[1].name == "foo-data-2.0.0-1.noarch.rpm");
+    auto unique = unique_package_assets({c[0], Asset{c[0].name, "duplicate", 10}, c[1]});
+    assert(unique.size() == 2 && unique[0].url == c[0].url);
 
     assert(parse_slug("a/b.c").first == "a");
     for (auto bad : {"a", "a/b/c", "/b", "a/..", "-a/b", "a b/c"}) {
@@ -52,10 +58,22 @@ int main() {
         }
     }
     assert(is_safe_rpm_name("x.rpm") && !is_safe_rpm_name("../x.rpm") && !is_safe_rpm_name(".x.rpm"));
+    assert(is_github_repo_id("gh:owner:repo"));
+    assert(is_github_repo_id("gh-owner_repo"));
+    assert(!is_github_repo_id("third-party"));
 
     auto tmp = std::filesystem::temp_directory_path() / "ghplugin-test";
     std::filesystem::remove_all(tmp);
     Store store(tmp / "state", tmp / "conf");
+    Tracked package_state{"owner", "repo", "v1", false, {"foo", "bar"}};
+    PackageNamesByRepo removed{{store.legacy_repo_id(package_state), {"foo"}}};
+    PackageNamesByRepo installed{{store.repo_id(package_state), {"baz"}}};
+    assert(reconcile_tracked_packages(package_state, store, removed, {}, installed));
+    assert((package_state.packages == std::vector<std::string>{"bar", "baz"}));
+    PackageNamesByRepo remaining{{store.repo_id(package_state), {"bar"}}};
+    installed[store.repo_id(package_state)].insert("baz");
+    assert(!reconcile_tracked_packages(package_state, store, removed, remaining, installed));
+
     Tracked t{"o", "r", "v1", true, {"foo"}};
     assert(refresh_due(t, 100000));
     t.last_checked = 100000;
@@ -67,6 +85,9 @@ int main() {
     auto found = store.find("o/r");
     assert(found && found->tag == "v1" && found->prerelease && found->packages.size() == 1);
     assert(found->last_checked == 100000);
+    record_release(store, t, "v2");
+    found = store.find("o/r");
+    assert(found && found->tag == "v2" && found->last_checked > 0);
     assert(store.repo_id(t) == "gh:o:r");
     std::filesystem::create_directories(tmp / "conf");
     {

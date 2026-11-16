@@ -1,11 +1,11 @@
 Name:           dnf5-plugin-gh
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        DNF5 plugin to install and update RPMs from GitHub releases
 
 # FIXME: confirm the license once a LICENSE file is added to the project
 License:        GPL-3.0-or-later
-Source0:        %{name}-%{version}.tar.gz
+Source0:        %{name}.tar.gz
 
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
@@ -26,10 +26,11 @@ dnf5 handles dependency resolution, upgrades and removal natively.
 Adds the gh-install, gh-update, gh-info and gh-remove commands.
 
 %prep
-%autosetup
+%autosetup -C -p1
 
-%build
+%conf
 %cmake
+%build
 %cmake_build
 
 %check

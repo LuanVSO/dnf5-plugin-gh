@@ -1,5 +1,6 @@
 #include "assets.hpp"
 #include "refresh.hpp"
+#include "workflows.hpp"
 
 #include <libdnf5/base/base.hpp>
 #include <libdnf5/base/transaction.hpp>
@@ -18,13 +19,10 @@
 #include <unistd.h>
 
 #include <chrono>
-#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
-#include <map>
 #include <set>
-#include <string_view>
 
 namespace {
 
@@ -43,11 +41,10 @@ public:
     const char * get_attribute(const char *) const noexcept override { return nullptr; }
 
     void repos_configured() override {
-        const char * marker = std::getenv("DNF5_GH_AUTO_REFRESH");
+        unsetenv("DNF5_GH_OWN_TRANSACTION");
         auto & base = get_base();
         const auto & config = base.get_config();
-        if (!marker || std::string_view(marker) != "1" || geteuid() != 0 ||
-            config.get_cacheonly_option().get_value() != "none") {
+        if (geteuid() != 0 || config.get_cacheonly_option().get_value() != "none") {
             return;
         }
         if (config.get_installroot_option().get_value() != "/" &&
@@ -111,6 +108,7 @@ public:
     void pre_transaction(const libdnf5::base::Transaction & transaction) override {
         removed_packages.clear();
         remaining_packages.clear();
+        installed_packages.clear();
         const auto & config = get_base().get_config();
         if (geteuid() != 0 || std::getenv("DNF5_GH_OWN_TRANSACTION") ||
             (config.get_installroot_option().get_value() != "/" &&
@@ -120,47 +118,59 @@ public:
         try {
             std::set<std::string> removed_nevras;
             for (const auto & item : transaction.get_transaction_packages()) {
-                if (item.get_action() != libdnf5::transaction::TransactionItemAction::REMOVE) {
-                    continue;
-                }
+                const auto action = item.get_action();
                 const auto package = item.get_package();
-                const auto origin = package.get_from_repo_id();
-                if (origin.rfind("gh:", 0) == 0 || origin.rfind("gh-", 0) == 0) {
-                    removed_packages[origin].insert(package.get_name());
-                    removed_nevras.insert(package.get_nevra());
+                if (libdnf5::transaction::transaction_item_action_is_inbound(action)) {
+                    const auto repo_id = package.get_repo_id();
+                    if (ghplugin::is_github_repo_id(repo_id)) {
+                        installed_packages[repo_id].insert(package.get_name());
+                    }
+                }
+                if (action == libdnf5::transaction::TransactionItemAction::REMOVE) {
+                    const auto origin = package.get_from_repo_id();
+                    if (ghplugin::is_github_repo_id(origin)) {
+                        removed_packages[origin].insert(package.get_name());
+                        removed_nevras.insert(package.get_nevra());
+                    }
                 }
             }
-            if (removed_packages.empty()) {
+            if (removed_packages.empty() && installed_packages.empty()) {
                 return;
             }
-            libdnf5::rpm::PackageQuery installed(get_base());
-            installed.filter_installed();
-            for (const auto & package : installed) {
-                if (!removed_nevras.count(package.get_nevra())) {
-                    remaining_packages[package.get_from_repo_id()].insert(package.get_name());
+            if (!removed_packages.empty()) {
+                libdnf5::rpm::PackageQuery installed(get_base());
+                installed.filter_installed();
+                for (const auto & package : installed) {
+                    if (!removed_nevras.count(package.get_nevra())) {
+                        remaining_packages[package.get_from_repo_id()].insert(package.get_name());
+                    }
                 }
-            }
-            for (const auto & item : transaction.get_transaction_packages()) {
-                if (libdnf5::transaction::transaction_item_action_is_inbound(item.get_action())) {
-                    const auto package = item.get_package();
-                    remaining_packages[package.get_repo_id()].insert(package.get_name());
+                for (const auto & item : transaction.get_transaction_packages()) {
+                    if (libdnf5::transaction::transaction_item_action_is_inbound(item.get_action())) {
+                        const auto package = item.get_package();
+                        remaining_packages[package.get_repo_id()].insert(package.get_name());
+                    }
                 }
             }
             if (config.get_skip_system_repo_lock_option().get_value()) {
                 removed_packages.clear();
-                std::cerr << "Warning: GitHub tracking cleanup skipped because the system repository lock is disabled\n";
+                installed_packages.clear();
+                remaining_packages.clear();
+                std::cerr << "Warning: GitHub tracking update skipped because the system repository lock is disabled\n";
                 return;
             }
             const auto ids = get_base().get_transaction_history()->list_transaction_ids();
             previous_history_id = ids.empty() ? 0 : ids.back();
         } catch (const std::exception & ex) {
             removed_packages.clear();
-            std::cerr << "Warning: cannot prepare GitHub tracking cleanup: " << ex.what() << '\n';
+            remaining_packages.clear();
+            installed_packages.clear();
+            std::cerr << "Warning: cannot prepare GitHub tracking update: " << ex.what() << '\n';
         }
     }
 
     void post_transaction(const libdnf5::base::Transaction &) override {
-        if (removed_packages.empty()) {
+        if (removed_packages.empty() && installed_packages.empty()) {
             return;
         }
         try {
@@ -169,28 +179,15 @@ public:
             if (latest.get_id() <= previous_history_id ||
                 latest.get_state() != libdnf5::transaction::TransactionState::OK) {
                 removed_packages.clear();
+                remaining_packages.clear();
+                installed_packages.clear();
                 return;
             }
             ghplugin::Store store;
             auto lock = store.lock();
             for (auto & tracked : store.list()) {
-                std::set<std::string> names;
-                std::set<std::string> remaining;
-                for (const auto & id : {store.repo_id(tracked), store.legacy_repo_id(tracked)}) {
-                    auto it = removed_packages.find(id);
-                    if (it != removed_packages.end()) {
-                        names.insert(it->second.begin(), it->second.end());
-                    }
-                    auto present = remaining_packages.find(id);
-                    if (present != remaining_packages.end()) {
-                        remaining.insert(present->second.begin(), present->second.end());
-                    }
-                }
-                const auto old_size = tracked.packages.size();
-                std::erase_if(tracked.packages, [&](const auto & name) {
-                    return names.count(name) != 0 && remaining.count(name) == 0;
-                });
-                if (tracked.packages.size() == old_size) {
+                if (!ghplugin::reconcile_tracked_packages(
+                        tracked, store, removed_packages, remaining_packages, installed_packages)) {
                     continue;
                 }
                 if (tracked.packages.empty()) {
@@ -202,14 +199,17 @@ public:
                 }
             }
         } catch (const std::exception & ex) {
-            std::cerr << "Warning: cannot update GitHub tracking after removal: " << ex.what() << '\n';
+            std::cerr << "Warning: cannot update GitHub tracking after transaction: " << ex.what() << '\n';
         }
         removed_packages.clear();
+        remaining_packages.clear();
+        installed_packages.clear();
     }
 
 private:
-    std::map<std::string, std::set<std::string>> removed_packages;
-    std::map<std::string, std::set<std::string>> remaining_packages;
+    ghplugin::PackageNamesByRepo removed_packages;
+    ghplugin::PackageNamesByRepo remaining_packages;
+    ghplugin::PackageNamesByRepo installed_packages;
     std::int64_t previous_history_id = 0;
 };
 

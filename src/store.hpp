@@ -26,6 +26,9 @@ struct Tracked {
 // "name-version-release.arch.rpm" -> "name"; empty if not parseable.
 std::string rpm_package_name(const std::string & filename);
 
+// Whether a repository id uses the current or legacy GitHub plugin prefix.
+bool is_github_repo_id(const std::string & repo_id);
+
 // File name safe to create inside the repo directory (no separators, ends in .rpm).
 bool is_safe_rpm_name(const std::string & filename);
 

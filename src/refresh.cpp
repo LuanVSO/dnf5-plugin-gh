@@ -1,8 +1,8 @@
 #include "refresh.hpp"
 #include "assets.hpp"
+#include "workflows.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <set>
 #include <stdexcept>
 
@@ -41,11 +41,8 @@ std::string refresh_repository(Store & store, Client & client, Tracked & tracked
     auto old = tracked.tag;
     if (release.tag != old) {
         store.sync(client, tracked, assets);
-        tracked.tag = release.tag;
     }
-    tracked.last_checked = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    store.save(tracked);
+    record_release(store, tracked, release.tag);
     return release.tag == old ? tracked.slug() + ": up to date (" + old + ")"
                               : tracked.slug() + ": " + old + " -> " + release.tag;
 }
