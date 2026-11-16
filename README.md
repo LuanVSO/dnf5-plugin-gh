@@ -16,7 +16,7 @@ package origins are not rewritten.
 |---|---|
 | `dnf5 gh install <owner/repo>... [--prerelease] [--all]` | Install RPMs from the newest release with an RPM for this architecture (`x86_64`/`noarch`). Prompts when several packages are available (`--all` takes all). |
 | `dnf5 gh update [owner/repo...]` | Refresh tracked projects from GitHub, then run `dnf5 upgrade` to apply. |
-| `dnf5 gh info [owner/repo...]` | Show tracked projects. |
+| `dnf5 gh list [owner/repo...]` | List tracked projects with release, prerelease, package, repo ID, and local path details. |
 | `dnf5 gh remove <owner/repo>...` | Remove the installed packages and stop tracking. |
 
 Every eligible dnf5 invocation automatically checks each enabled tracked

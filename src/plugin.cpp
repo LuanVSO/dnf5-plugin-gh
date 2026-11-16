@@ -55,7 +55,7 @@ protected:
             auto [owner, repo] = parse_slug(s);
             auto t = store.find(owner + "/" + repo);
             if (!t) {
-                throw std::runtime_error(s + " is not tracked (see 'gh info')");
+                throw std::runtime_error(s + " is not tracked (see 'gh list')");
             }
             out.push_back(*t);
         }
@@ -233,12 +233,12 @@ private:
     std::unique_ptr<libdnf5::cli::session::StringArgumentList> specs;
 };
 
-class GhInfoCommand : public GhCommand {
+class GhTrackedProjectsCommand : public GhCommand {
 public:
-    explicit GhInfoCommand(dnf5::Context & ctx) : GhCommand(ctx, "info") {}
+    explicit GhTrackedProjectsCommand(dnf5::Context & ctx) : GhCommand(ctx, "list") {}
 
     void set_argument_parser() override {
-        get_argument_parser_command()->set_description("Show tracked GitHub repositories");
+        get_argument_parser_command()->set_description("List tracked GitHub projects and their details");
         specs = std::make_unique<libdnf5::cli::session::StringArgumentList>(
             *this, "owner/repo", "Tracked repositories (default: all)", ArgPositional::UNLIMITED);
     }
@@ -339,7 +339,7 @@ public:
         auto & ctx = get_context();
         register_subcommand(std::make_unique<GhInstallCommand>(ctx));
         register_subcommand(std::make_unique<GhUpdateCommand>(ctx));
-        register_subcommand(std::make_unique<GhInfoCommand>(ctx));
+        register_subcommand(std::make_unique<GhTrackedProjectsCommand>(ctx));
         register_subcommand(std::make_unique<GhRemoveCommand>(ctx));
     }
 

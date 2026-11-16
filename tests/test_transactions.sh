@@ -146,8 +146,14 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     dnf5 "${options[@]}" gh update modrinth/code
     test "$(wc -l < "$work/requests")" -eq "$((after + 1))"
     python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
-    dnf5 "${options[@]}" gh info modrinth/code
+    dnf5 "${options[@]}" gh list > "$work/list.out"
     test "$(wc -l < "$work/requests")" -eq "$((after + 2))"
+    grep -q "^modrinth/code$" "$work/list.out"
+    grep -q "^  release:    v0.23.2$" "$work/list.out"
+    grep -q "^  prerelease: no$" "$work/list.out"
+    grep -q "^  packages:   Modrinth.App$" "$work/list.out"
+    grep -q "^  repo id:    gh:modrinth:code$" "$work/list.out"
+    grep -q "^  location:   " "$work/list.out"
     python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]-=86400; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf5-gh/modrinth_code/state.json
     dnf5 "${options[@]}" --nogpgcheck -y upgrade
     test "$(wc -l < "$work/requests")" -eq "$((after + 3))"
