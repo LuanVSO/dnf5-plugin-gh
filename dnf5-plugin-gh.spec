@@ -23,7 +23,7 @@ A dnf5 plugin that installs and updates RPM packages published as GitHub
 release assets. Each tracked project is mirrored into a local repository, so
 dnf5 handles dependency resolution, upgrades and removal natively.
 
-Adds the gh-install, gh-update, gh-info and gh-remove commands.
+Adds the `gh install`, `gh update`, `gh info` and `gh remove` commands.
 
 %prep
 %autosetup -C -p1

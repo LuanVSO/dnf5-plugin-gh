@@ -35,11 +35,6 @@ class GhCommand : public dnf5::Command {
 public:
     using dnf5::Command::Command;
 
-    void set_parent_command() override {
-        auto * root = get_session().get_argument_parser().get_root_command();
-        root->register_command(get_argument_parser_command());
-    }
-
 protected:
     Store store;
 
@@ -60,7 +55,7 @@ protected:
             auto [owner, repo] = parse_slug(s);
             auto t = store.find(owner + "/" + repo);
             if (!t) {
-                throw std::runtime_error(s + " is not tracked (see gh-info)");
+                throw std::runtime_error(s + " is not tracked (see 'gh info')");
             }
             out.push_back(*t);
         }
@@ -70,7 +65,7 @@ protected:
 
 class GhInstallCommand : public GhCommand {
 public:
-    explicit GhInstallCommand(dnf5::Context & ctx) : GhCommand(ctx, "gh-install") {}
+    explicit GhInstallCommand(dnf5::Context & ctx) : GhCommand(ctx, "install") {}
 
     void set_argument_parser() override {
         auto & ctx = get_context();
@@ -194,7 +189,7 @@ private:
 
 class GhUpdateCommand : public GhCommand {
 public:
-    explicit GhUpdateCommand(dnf5::Context & ctx) : GhCommand(ctx, "gh-update") {}
+    explicit GhUpdateCommand(dnf5::Context & ctx) : GhCommand(ctx, "update") {}
 
     void set_argument_parser() override {
         get_argument_parser_command()->set_description(
@@ -240,7 +235,7 @@ private:
 
 class GhInfoCommand : public GhCommand {
 public:
-    explicit GhInfoCommand(dnf5::Context & ctx) : GhCommand(ctx, "gh-info") {}
+    explicit GhInfoCommand(dnf5::Context & ctx) : GhCommand(ctx, "info") {}
 
     void set_argument_parser() override {
         get_argument_parser_command()->set_description("Show tracked GitHub repositories");
@@ -278,7 +273,7 @@ private:
 
 class GhRemoveCommand : public GhCommand {
 public:
-    explicit GhRemoveCommand(dnf5::Context & ctx) : GhCommand(ctx, "gh-remove") {}
+    explicit GhRemoveCommand(dnf5::Context & ctx) : GhCommand(ctx, "remove") {}
 
     void set_argument_parser() override {
         get_argument_parser_command()->set_description(
@@ -293,7 +288,7 @@ public:
         require_root();
         auto & ctx = get_context();
         if (!ctx.get_transaction_store_path().empty()) {
-            throw std::runtime_error("--store is not supported by gh-remove");
+            throw std::runtime_error("--store is not supported by 'gh remove'");
         }
         if (setenv("DNF5_GH_OWN_TRANSACTION", "1", 1) != 0) {
             throw std::runtime_error("cannot mark GitHub transaction");
@@ -327,6 +322,30 @@ private:
     std::unique_ptr<StoreLock> lock;
 };
 
+class GhRootCommand : public dnf5::Command {
+public:
+    explicit GhRootCommand(dnf5::Context & ctx) : dnf5::Command(ctx, "gh") {}
+
+    void set_parent_command() override {
+        auto * root = get_session().get_argument_parser().get_root_command();
+        root->register_command(get_argument_parser_command());
+    }
+
+    void set_argument_parser() override {
+        get_argument_parser_command()->set_description("Manage RPMs from GitHub releases");
+    }
+
+    void register_subcommands() override {
+        auto & ctx = get_context();
+        register_subcommand(std::make_unique<GhInstallCommand>(ctx));
+        register_subcommand(std::make_unique<GhUpdateCommand>(ctx));
+        register_subcommand(std::make_unique<GhInfoCommand>(ctx));
+        register_subcommand(std::make_unique<GhRemoveCommand>(ctx));
+    }
+
+    void run() override { throw_missing_command(); }
+};
+
 class GhPlugin : public dnf5::IPlugin {
 public:
     using IPlugin::IPlugin;
@@ -348,10 +367,7 @@ public:
     std::vector<std::unique_ptr<dnf5::Command>> create_commands() override {
         auto & ctx = get_context();
         std::vector<std::unique_ptr<dnf5::Command>> cmds;
-        cmds.push_back(std::make_unique<GhInstallCommand>(ctx));
-        cmds.push_back(std::make_unique<GhUpdateCommand>(ctx));
-        cmds.push_back(std::make_unique<GhInfoCommand>(ctx));
-        cmds.push_back(std::make_unique<GhRemoveCommand>(ctx));
+        cmds.push_back(std::make_unique<GhRootCommand>(ctx));
         return cmds;
     }
 

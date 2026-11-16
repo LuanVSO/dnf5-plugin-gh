@@ -41,7 +41,9 @@ public:
     const char * get_attribute(const char *) const noexcept override { return nullptr; }
 
     void repos_configured() override {
-        unsetenv("DNF5_GH_OWN_TRANSACTION");
+        if (std::getenv("DNF5_GH_OWN_TRANSACTION")) {
+            return;
+        }
         auto & base = get_base();
         const auto & config = base.get_config();
         if (geteuid() != 0 || config.get_cacheonly_option().get_value() != "none") {

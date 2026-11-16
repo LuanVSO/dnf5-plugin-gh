@@ -14,15 +14,15 @@ package origins are not rewritten.
 
 | Command | Description |
 |---|---|
-| `dnf5 gh-install <owner/repo>... [--prerelease] [--all]` | Install RPMs from the newest release with an RPM for this architecture (`x86_64`/`noarch`). Prompts when several packages are available (`--all` takes all). |
-| `dnf5 gh-update [owner/repo...]` | Refresh tracked projects from GitHub, then run `dnf5 upgrade` to apply. |
-| `dnf5 gh-info [owner/repo...]` | Show tracked projects. |
-| `dnf5 gh-remove <owner/repo>...` | Remove the installed packages and stop tracking. |
+| `dnf5 gh install <owner/repo>... [--prerelease] [--all]` | Install RPMs from the newest release with an RPM for this architecture (`x86_64`/`noarch`). Prompts when several packages are available (`--all` takes all). |
+| `dnf5 gh update [owner/repo...]` | Refresh tracked projects from GitHub, then run `dnf5 upgrade` to apply. |
+| `dnf5 gh info [owner/repo...]` | Show tracked projects. |
+| `dnf5 gh remove <owner/repo>...` | Remove the installed packages and stop tracking. |
 
 Every eligible dnf5 invocation automatically checks each enabled tracked
 GitHub repository at most once every 24 hours. Repositories are refreshed
 before resolving transactions, so available updates can be installed normally.
-`dnf5 gh-update` forces an immediate check, regardless of the interval.
+`dnf5 gh update` forces an immediate check, regardless of the interval.
 If preparing a refresh fails, a warning is printed and the previous repository
 remains available; the next update retries. After new metadata is published,
 RPMs not selected for the refreshed repository are removed. Clients using
@@ -38,9 +38,9 @@ local metadata on each use, while GitHub itself is queried only after the
 
 Set `GITHUB_TOKEN` (or `GH_TOKEN`) to avoid API rate limits; use `sudo -E` to keep it.
 
-`gh-install` also supports dnf5's `--store PATH` option. It prepares the local
+`gh install` also supports dnf5's `--store PATH` option. It prepares the local
 repository and records the project even though the transaction is only stored,
-not executed. `--store` is not supported by `gh-remove`.
+not executed. `--store` is not supported by `gh remove`.
 
 The enabled libdnf5 `gh` plugin reconciles successful transaction installs and
 removals from tracked GitHub repositories, including transactions initiated by
@@ -52,7 +52,7 @@ lock is disabled, or for alternate installroots without `--use-host-config`.
 Existing packages recorded as `@commandline` cannot be identified by repository
 origin.
 
-**Removal caveat:** `gh-remove` currently deletes tracking data before the
+**Removal caveat:** `gh remove` currently deletes tracking data before the
 transaction is confirmed or run. If removal is cancelled or fails, the package
 may remain installed but no longer be tracked.
 
