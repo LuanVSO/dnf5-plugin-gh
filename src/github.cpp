@@ -3,11 +3,16 @@
 #include <curl/curl.h>
 
 #include <nlohmann/json.hpp>
+#include <libdnf5/conf/config_parser.hpp>
 
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
+
+#ifndef GH_CONFIG_FILE
+#define GH_CONFIG_FILE "/etc/dnf/libdnf5-plugins/gh.conf"
+#endif
 
 namespace ghplugin {
 
@@ -76,13 +81,33 @@ CurlPtr make_handle(const std::string & token, curl_slist *& headers, bool api) 
 
 }  // namespace
 
-Client::Client(std::string api_base) : api_base(std::move(api_base)) {
+std::string resolve_github_token(const std::filesystem::path & config_file) {
     for (const char * var : {"GITHUB_TOKEN", "GH_TOKEN"}) {
-        if (const char * v = std::getenv(var); v && *v) {
-            token = v;
-            break;
+        if (const char * value = std::getenv(var); value && *value) {
+            return value;
         }
     }
+
+    const auto path = config_file.empty() ? std::filesystem::path(GH_CONFIG_FILE) : config_file;
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    if (ec) {
+        throw std::filesystem::filesystem_error("cannot check GitHub plugin config", path, ec);
+    }
+    if (!exists) {
+        return {};
+    }
+
+    libdnf5::ConfigParser parser;
+    parser.read(path.string());
+    if (!parser.has_option("main", "token")) {
+        return {};
+    }
+    return parser.get_value("main", "token");
+}
+
+Client::Client(std::string api_base) : api_base(std::move(api_base)) {
+    token = resolve_github_token();
 }
 
 std::vector<Release> Client::fetch_releases(const std::string & owner, const std::string & repo) {
@@ -106,7 +131,7 @@ std::vector<Release> Client::fetch_releases(const std::string & owner, const std
     if (status == 403 || status == 429) {
         throw std::runtime_error(
             "GitHub API rate limit or access denied (HTTP " + std::to_string(status) +
-            "); set GITHUB_TOKEN (use sudo -E to keep it)");
+            "); set GITHUB_TOKEN or configure token in gh.conf");
     }
     if (status != 200) {
         throw std::runtime_error("GitHub API returned HTTP " + std::to_string(status));

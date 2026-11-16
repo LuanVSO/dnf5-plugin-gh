@@ -24,9 +24,12 @@ struct Release {
 // Parses the JSON array returned by GET /repos/{owner}/{repo}/releases.
 std::vector<Release> parse_releases(const std::string & json);
 
+// Reads GITHUB_TOKEN or GH_TOKEN first, then the optional token in the plugin config.
+std::string resolve_github_token(const std::filesystem::path & config_file = {});
+
 class Client {
 public:
-    // Reads the token from GITHUB_TOKEN or GH_TOKEN; `api_base` is overridable for tests.
+    // `api_base` is overridable for tests.
     explicit Client(std::string api_base = "https://api.github.com");
 
     std::vector<Release> fetch_releases(const std::string & owner, const std::string & repo);

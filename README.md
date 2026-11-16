@@ -46,6 +46,9 @@ local metadata on each use, while GitHub itself is queried only after the
 24-hour interval.
 
 Set `GITHUB_TOKEN` (or `GH_TOKEN`) to avoid API rate limits; use `sudo -E` to keep it.
+Alternatively, set `token` under `[main]` in `/etc/dnf/libdnf5-plugins/gh.conf`.
+Environment variables take precedence. The installed config file is readable only
+by root; retain restrictive permissions if you edit it to add a token.
 
 `gh install` also supports dnf5's `--store PATH` option. It prepares the local
 repository and records the project even though the transaction is only stored,

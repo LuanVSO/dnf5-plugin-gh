@@ -1,4 +1,5 @@
 #include "assets.hpp"
+#include "github.hpp"
 #include "refresh.hpp"
 #include "store.hpp"
 #include "workflows.hpp"
@@ -9,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 
 using namespace ghplugin;
 
@@ -92,6 +94,33 @@ int main() {
     auto * tmp_created = mkdtemp(tmp_buffer.data());
     assert(tmp_created);
     std::filesystem::path tmp(tmp_created);
+    const auto old_github_token = std::getenv("GITHUB_TOKEN")
+        ? std::optional<std::string>(std::getenv("GITHUB_TOKEN"))
+        : std::nullopt;
+    const auto old_gh_token = std::getenv("GH_TOKEN")
+        ? std::optional<std::string>(std::getenv("GH_TOKEN"))
+        : std::nullopt;
+    unsetenv("GITHUB_TOKEN");
+    unsetenv("GH_TOKEN");
+    auto token_config = tmp / "gh.conf";
+    {
+        std::ofstream config(token_config);
+        config << "[main]\nenabled = 1\ntoken = config-token\n";
+    }
+    assert(resolve_github_token(token_config) == "config-token");
+    setenv("GH_TOKEN", "environment-token", 1);
+    assert(resolve_github_token(token_config) == "environment-token");
+    setenv("GITHUB_TOKEN", "preferred-token", 1);
+    assert(resolve_github_token(token_config) == "preferred-token");
+    unsetenv("GITHUB_TOKEN");
+    unsetenv("GH_TOKEN");
+    if (old_github_token) {
+        setenv("GITHUB_TOKEN", old_github_token->c_str(), 1);
+    }
+    if (old_gh_token) {
+        setenv("GH_TOKEN", old_gh_token->c_str(), 1);
+    }
+
     Store store(tmp / "state", tmp / "conf");
     std::filesystem::create_directories(tmp / "conf");
     Tracked sync_tracked{"sync", "repo", "v1", false, {"foo"}};
