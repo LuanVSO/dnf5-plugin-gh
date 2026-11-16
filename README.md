@@ -19,6 +19,11 @@ package origins are not rewritten.
 | `dnf5 gh list [owner/repo...]` | List tracked projects with release, prerelease, package, repo ID, and local path details. |
 | `dnf5 gh remove <owner/repo>...` | Remove the installed packages and stop tracking. |
 
+Package names come from RPM headers, not release asset filenames. Compatible
+assets are downloaded before selection so their package names can be identified.
+Older filename-based tracking entries are corrected using cached RPMs when
+available, and saved on the next tracking update.
+
 Every eligible dnf5 invocation automatically checks each enabled tracked
 GitHub repository at most once every 24 hours. Repositories are refreshed
 before resolving transactions, so available updates can be installed normally.
@@ -52,13 +57,14 @@ lock is disabled, or for alternate installroots without `--use-host-config`.
 Existing packages recorded as `@commandline` cannot be identified by repository
 origin.
 
-**Removal caveat:** `gh remove` currently deletes tracking data before the
-transaction is confirmed or run. If removal is cancelled or fails, the package
-may remain installed but no longer be tracked.
+`gh remove` deletes tracking data only after the removal transaction succeeds.
+Cancelling or failing the transaction leaves the repository tracked. It requires
+the system repository lock and persistent transaction history. If none of the
+tracked packages are installed, it asks before removing the tracking data.
 
 ## Build
 
-Requires `libdnf5-devel libdnf5-cli-devel dnf5-devel libcurl-devel json-devel`; `createrepo_c` at runtime.
+Requires `libdnf5-devel libdnf5-cli-devel dnf5-devel libcurl-devel json-devel rpm-devel`; `createrepo_c` at runtime.
 
     cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_SYSCONFDIR=/etc -DDNF5_PLUGIN_DIR="$(rpm --eval '%{_libdir}')/dnf5/plugins"
     cmake --build build && ctest --test-dir build

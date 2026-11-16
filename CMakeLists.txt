@@ -9,6 +9,7 @@ find_package(PkgConfig REQUIRED)
 find_package(nlohmann_json 3 REQUIRED)
 pkg_check_modules(LIBDNF5 REQUIRED libdnf5 libdnf5-cli)
 pkg_check_modules(CURL REQUIRED libcurl)
+pkg_check_modules(RPM REQUIRED rpm)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -20,8 +21,8 @@ add_library(ghcore STATIC
     src/store.cpp
     src/workflows.cpp)
 target_include_directories(ghcore PUBLIC src)
-target_link_libraries(ghcore PUBLIC nlohmann_json::nlohmann_json ${CURL_LIBRARIES})
-target_include_directories(ghcore PUBLIC ${CURL_INCLUDE_DIRS})
+target_link_libraries(ghcore PUBLIC nlohmann_json::nlohmann_json ${CURL_LIBRARIES} ${RPM_LIBRARIES})
+target_include_directories(ghcore PUBLIC ${CURL_INCLUDE_DIRS} ${RPM_INCLUDE_DIRS})
 
 add_library(gh_cmd_plugin MODULE src/plugin.cpp)
 set_target_properties(gh_cmd_plugin PROPERTIES PREFIX "")

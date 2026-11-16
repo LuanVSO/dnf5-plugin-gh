@@ -33,7 +33,10 @@ std::vector<Asset> unique_package_assets(const std::vector<Asset> & assets) {
     std::vector<Asset> unique;
     std::set<std::string> seen;
     for (const auto & asset : assets) {
-        if (seen.insert(rpm_package_name(asset.name)).second) {
+        if (asset.package_name.empty()) {
+            throw std::runtime_error("missing RPM package name for " + asset.name);
+        }
+        if (seen.insert(asset.package_name).second) {
             unique.push_back(asset);
         }
     }
@@ -43,7 +46,10 @@ std::vector<Asset> unique_package_assets(const std::vector<Asset> & assets) {
 void replace_tracked_packages(Tracked & tracked, const std::vector<Asset> & assets) {
     tracked.packages.clear();
     for (const auto & asset : assets) {
-        tracked.packages.push_back(rpm_package_name(asset.name));
+        if (asset.package_name.empty()) {
+            throw std::runtime_error("missing RPM package name for " + asset.name);
+        }
+        tracked.packages.push_back(asset.package_name);
     }
 }
 
@@ -88,7 +94,7 @@ void record_release(Store & store, Tracked & tracked, const std::string & tag) {
 
 std::vector<std::filesystem::path> install_release(
     Store & store, Client & client, Tracked & tracked, const InstallPlan & plan,
-    const std::vector<Asset> & selected) {
+    const std::vector<Asset> & selected, const std::filesystem::path & prepared) {
     if (selected.empty()) {
         throw std::invalid_argument("cannot install a release without selected rpm assets");
     }
@@ -96,7 +102,7 @@ std::vector<std::filesystem::path> install_release(
     tracked.prerelease = plan.prerelease;
     replace_tracked_packages(tracked, selected);
 
-    auto paths = store.sync(client, tracked, selected);
+    auto paths = store.sync(client, tracked, selected, prepared);
     record_release(store, tracked, plan.release.tag);
     return paths;
 }

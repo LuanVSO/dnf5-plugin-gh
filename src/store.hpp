@@ -25,6 +25,7 @@ struct Tracked {
 
 // "name-version-release.arch.rpm" -> "name"; empty if not parseable.
 std::string rpm_package_name(const std::string & filename);
+std::string rpm_header_name(const std::filesystem::path & path);
 
 // Whether a repository id uses the current or legacy GitHub plugin prefix.
 bool is_github_repo_id(const std::string & repo_id);
@@ -41,6 +42,17 @@ public:
 
 private:
     int fd;
+};
+
+class PreparedAssets {
+public:
+    explicit PreparedAssets(std::filesystem::path path);
+    ~PreparedAssets();
+    PreparedAssets(const PreparedAssets &) = delete;
+    PreparedAssets & operator=(const PreparedAssets &) = delete;
+
+    std::filesystem::path path;
+    std::vector<Asset> assets;
 };
 
 class Store {
@@ -60,10 +72,13 @@ public:
     std::optional<Tracked> find(const std::string & slug) const;
     void save(const Tracked & t) const;
     void remove(const Tracked & t) const;
+    std::unique_ptr<PreparedAssets> prepare(Client & client, const Tracked & t, const std::vector<Asset> & assets) const;
 
     // Makes the local repo contain exactly `assets` (downloads missing, drops stale), regenerates
     // metadata and writes the dnf repo file. Returns the paths of the rpm files in the repo.
-    std::vector<std::filesystem::path> sync(Client & client, const Tracked & t, const std::vector<Asset> & assets) const;
+    std::vector<std::filesystem::path> sync(
+        Client & client, const Tracked & t, const std::vector<Asset> & assets,
+        const std::filesystem::path & prepared = {}) const;
 
 private:
     std::filesystem::path state_root;

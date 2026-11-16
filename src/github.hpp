@@ -10,6 +10,7 @@ struct Asset {
     std::string name;
     std::string url;
     long long size = 0;
+    std::string package_name;
 };
 
 struct Release {

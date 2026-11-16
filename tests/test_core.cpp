@@ -64,8 +64,14 @@ int main() {
     auto c = compatible_assets(releases[2], "x86_64");
     assert(c.size() == 2);
     assert(c[0].name == "foo-2.0.0-1.x86_64.rpm" && c[1].name == "foo-data-2.0.0-1.noarch.rpm");
-    auto unique = unique_package_assets({c[0], Asset{c[0].name, "duplicate", 10}, c[1]});
+    auto unique = unique_package_assets({
+        Asset{c[0].name, c[0].url, 10, "foo"},
+        Asset{"different-2.0.0-1.x86_64.rpm", "duplicate", 10, "foo"},
+        Asset{c[1].name, c[1].url, 10, "foo-data"}});
     assert(unique.size() == 2 && unique[0].url == c[0].url);
+    Tracked selected{"owner", "repo"};
+    replace_tracked_packages(selected, unique);
+    assert((selected.packages == std::vector<std::string>{"foo", "foo-data"}));
 
     assert(parse_slug("a/b.c").first == "a");
     for (auto bad : {"a", "a/b/c", "/b", "a/..", "-a/b", "a b/c"}) {

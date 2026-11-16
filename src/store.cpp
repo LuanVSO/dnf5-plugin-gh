@@ -1,6 +1,10 @@
 #include "store.hpp"
 
 #include <nlohmann/json.hpp>
+#include <rpm/header.h>
+#include <rpm/rpmio.h>
+#include <rpm/rpmlib.h>
+#include <rpm/rpmts.h>
 
 #include <sys/wait.h>
 #include <sys/syscall.h>
@@ -13,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <linux/fs.h>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -63,6 +68,35 @@ std::string rpm_package_name(const std::string & filename) {
         return {};
     }
     return stem.substr(0, ver);
+}
+
+std::string rpm_header_name(const fs::path & path) {
+    auto ts = rpmtsCreate();
+    if (!ts) {
+        throw std::runtime_error("cannot create RPM transaction");
+    }
+    rpmtsSetVSFlags(ts, static_cast<rpmVSFlags>(_RPMVSF_NOSIGNATURES));
+    auto fd = Fopen(path.c_str(), "r.ufdio");
+    if (!fd || Ferror(fd)) {
+        if (fd) Fclose(fd);
+        rpmtsFree(ts);
+        throw std::runtime_error("cannot open RPM " + path.string());
+    }
+    Header header = nullptr;
+    auto rc = rpmReadPackageFile(ts, fd, path.c_str(), &header);
+    Fclose(fd);
+    std::string name;
+    if (header) {
+        if (const auto * value = headerGetString(header, RPMTAG_NAME)) {
+            name = value;
+        }
+        headerFree(header);
+    }
+    rpmtsFree(ts);
+    if (rc != RPMRC_OK || name.empty()) {
+        throw std::runtime_error("cannot read RPM package name from " + path.string());
+    }
+    return name;
 }
 
 bool is_github_repo_id(const std::string & repo_id) {
@@ -161,6 +195,28 @@ std::vector<Tracked> Store::list() const {
             t.prerelease = j.value("prerelease", false);
             t.packages = j.value("packages", std::vector<std::string>{});
             t.last_checked = j.value("last_checked", std::int64_t{0});
+            std::map<std::string, std::set<std::string>> aliases;
+            std::set<std::string> actual_names;
+            for (const auto & file : fs::directory_iterator(e.path())) {
+                if (!file.is_regular_file() || !is_safe_rpm_name(file.path().filename().string())) {
+                    continue;
+                }
+                auto name = rpm_header_name(file.path());
+                actual_names.insert(name);
+                aliases[rpm_package_name(file.path().filename().string())].insert(name);
+            }
+            for (auto & package : t.packages) {
+                if (actual_names.count(package)) continue;
+                auto it = aliases.find(package);
+                if (it != aliases.end()) {
+                    if (it->second.size() != 1) {
+                        throw std::runtime_error("ambiguous legacy package name " + package + " for " + t.slug());
+                    }
+                    package = *it->second.begin();
+                }
+            }
+            std::set<std::string> seen;
+            std::erase_if(t.packages, [&](const auto & name) { return !seen.insert(name).second; });
             out.push_back(std::move(t));
         } catch (const nlohmann::json::exception & ex) {
             throw std::runtime_error("invalid tracking state in " + e.path().string() + ": " + ex.what());
@@ -208,6 +264,18 @@ void Store::remove(const Tracked & t) const {
 
 namespace {
 
+fs::path make_staging_dir(const fs::path & dir, const std::string & slug) {
+    fs::create_directories(dir);
+    auto pattern = (dir / ".staging-XXXXXX").string();
+    std::vector<char> buffer(pattern.begin(), pattern.end());
+    buffer.push_back('\0');
+    char * created = mkdtemp(buffer.data());
+    if (!created) {
+        throw std::runtime_error("cannot create staging directory for " + slug + ": " + std::strerror(errno));
+    }
+    return created;
+}
+
 void run_createrepo(const std::string & cmd, const fs::path & dir) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -232,21 +300,55 @@ void run_createrepo(const std::string & cmd, const fs::path & dir) {
 
 }  // namespace
 
-std::vector<fs::path> Store::sync(Client & client, const Tracked & t, const std::vector<Asset> & assets) const {
+PreparedAssets::PreparedAssets(fs::path path) : path(std::move(path)) {}
+
+PreparedAssets::~PreparedAssets() {
+    std::error_code ec;
+    fs::remove_all(path, ec);
+}
+
+std::unique_ptr<PreparedAssets> Store::prepare(
+    Client & client, const Tracked & t, const std::vector<Asset> & assets) const {
+    auto result = std::make_unique<PreparedAssets>(make_staging_dir(dir(t), t.slug()));
+    std::set<std::string> seen;
+    for (auto asset : assets) {
+        if (!is_safe_rpm_name(asset.name)) {
+            throw std::runtime_error("refusing unsafe asset name: " + asset.name);
+        }
+        if (asset.url.rfind("https://", 0) != 0) {
+            throw std::runtime_error("refusing non-https asset url: " + asset.url);
+        }
+        if (!seen.insert(asset.name).second) {
+            throw std::runtime_error("duplicate asset name: " + asset.name);
+        }
+        auto cached = dir(t) / asset.name;
+        auto staged = result->path / asset.name;
+        if (fs::exists(cached)) {
+            if (asset.size > 0 && static_cast<long long>(fs::file_size(cached)) != asset.size) {
+                throw std::runtime_error("existing RPM differs from release asset: " + cached.string());
+            }
+            fs::create_hard_link(cached, staged);
+        } else {
+            client.download(asset.url, staged);
+            if (asset.size > 0 && static_cast<long long>(fs::file_size(staged)) != asset.size) {
+                throw std::runtime_error("downloaded RPM has unexpected size: " + asset.name);
+            }
+        }
+        asset.package_name = rpm_header_name(staged);
+        result->assets.push_back(std::move(asset));
+    }
+    return result;
+}
+
+std::vector<fs::path> Store::sync(
+    Client & client, const Tracked & t, const std::vector<Asset> & assets, const fs::path & prepared) const {
     auto d = dir(t);
     fs::create_directories(d);
 
-    auto pattern = (d / ".staging-XXXXXX").string();
-    std::vector<char> buffer(pattern.begin(), pattern.end());
-    buffer.push_back('\0');
-    char * created = mkdtemp(buffer.data());
-    if (!created) {
-        throw std::runtime_error("cannot create staging directory for " + t.slug() + ": " + std::strerror(errno));
-    }
     struct Staging {
         fs::path path;
         ~Staging() { std::error_code ec; fs::remove_all(path, ec); }
-    } staging{created};
+    } staging{make_staging_dir(d, t.slug())};
 
     std::set<std::string> wanted;
     std::vector<fs::path> paths;
@@ -262,7 +364,9 @@ std::vector<fs::path> Store::sync(Client & client, const Tracked & t, const std:
         }
         auto p = d / a.name;
         auto staged = staging.path / a.name;
-        if (fs::exists(p)) {
+        if (!prepared.empty()) {
+            fs::create_hard_link(prepared / a.name, staged);
+        } else if (fs::exists(p)) {
             if (a.size > 0 && static_cast<long long>(fs::file_size(p)) != a.size) {
                 throw std::runtime_error("existing RPM differs from release asset: " + p.string());
             }

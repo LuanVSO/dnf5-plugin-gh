@@ -33,6 +33,6 @@ bool reconcile_tracked_packages(
 void record_release(Store & store, Tracked & tracked, const std::string & tag);
 std::vector<std::filesystem::path> install_release(
     Store & store, Client & client, Tracked & tracked, const InstallPlan & plan,
-    const std::vector<Asset> & selected);
+    const std::vector<Asset> & selected, const std::filesystem::path & prepared);
 
 }  // namespace ghplugin

@@ -8,11 +8,16 @@
 #include <dnf5/iplugin.hpp>
 #include <dnf5/shared_options.hpp>
 #include <libdnf5-cli/session.hpp>
+#include <libdnf5-cli/utils/userconfirm.hpp>
+#include <libdnf5/conf/config_main.hpp>
 #include <libdnf5/repo/repo_query.hpp>
 #include <libdnf5/rpm/package_query.hpp>
+#include <libdnf5/transaction/transaction.hpp>
+#include <libdnf5/transaction/transaction_history.hpp>
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -30,6 +35,13 @@ std::exception_ptr last_exception;
 constexpr dnf5::PluginVersion PLUGIN_VERSION{.major = 0, .minor = 1, .micro = 1};
 constexpr const char * attrs[]{"author.name", "author.email", "description", nullptr};
 constexpr const char * attrs_value[]{"dnf5-plugin-gh contributors", "", "Install and update RPMs from GitHub releases"};
+
+struct PendingRemoval {
+    Store store;
+    std::unique_ptr<StoreLock> lock;
+    std::vector<Tracked> projects;
+    std::int64_t previous_history_id = 0;
+};
 
 class GhCommand : public dnf5::Command {
 public:
@@ -94,9 +106,9 @@ public:
         auto arch = ctx.get_base().get_vars()->get_value("arch");
         for (const auto & spec : specs->get_value()) {
             auto plan = fetch_install_plan(client, spec, arch, prerelease->get_value());
-            auto chosen = choose(spec, plan.candidates);
-
             Tracked t = store.find(plan.owner + "/" + plan.repo).value_or(Tracked{plan.owner, plan.repo});
+            auto prepared = store.prepare(client, t, plan.candidates);
+            auto chosen = choose(spec, prepared->assets);
             say("Using " + spec + " " + plan.release.tag);
             store.migrate_repo(t);
             libdnf5::repo::RepoQuery old_repos(ctx.get_base());
@@ -104,7 +116,7 @@ public:
             for (auto & repo : old_repos) {
                 repo->disable();
             }
-            auto paths = install_release(store, client, t, plan, chosen);
+            auto paths = install_release(store, client, t, plan, chosen, prepared->path);
             libdnf5::repo::RepoQuery repos(ctx.get_base());
             repos.filter_id(store.repo_id(t));
             if (repos.empty()) {
@@ -273,7 +285,8 @@ private:
 
 class GhRemoveCommand : public GhCommand {
 public:
-    explicit GhRemoveCommand(dnf5::Context & ctx) : GhCommand(ctx, "remove") {}
+    GhRemoveCommand(dnf5::Context & ctx, PendingRemoval & removal)
+        : GhCommand(ctx, "remove"), removal(removal) {}
 
     void set_argument_parser() override {
         get_argument_parser_command()->set_description(
@@ -290,6 +303,13 @@ public:
         if (!ctx.get_transaction_store_path().empty()) {
             throw std::runtime_error("--store is not supported by 'gh remove'");
         }
+        const auto & config = ctx.get_base().get_config();
+        if (config.get_skip_system_repo_lock_option().get_value()) {
+            throw std::runtime_error("'gh remove' requires the system repository lock");
+        }
+        if (config.get_persistence_option().get_value() == "transient") {
+            throw std::runtime_error("'gh remove' requires persistent transaction history");
+        }
         if (setenv("DNF5_GH_OWN_TRANSACTION", "1", 1) != 0) {
             throw std::runtime_error("cannot mark GitHub transaction");
         }
@@ -298,33 +318,51 @@ public:
     }
 
     void run() override {
-        lock = store.lock();
+        removal.lock = removal.store.lock();
         auto * goal = get_context().get_goal();
-        for (const auto & t : resolve_targets(specs->get_value())) {
+        auto targets = resolve_targets(specs->get_value());
+        std::vector<std::string> package_names;
+        for (const auto & t : targets) {
+            package_names.insert(package_names.end(), t.packages.begin(), t.packages.end());
+        }
+        libdnf5::rpm::PackageQuery installed(get_context().get_base());
+        installed.filter_installed();
+        installed.filter_name(package_names);
+        if (installed.empty()) {
+            auto & config = get_context().get_base().get_config();
+            const auto & flags = config.get_tsflags_option().get_value();
+            if (std::find(flags.begin(), flags.end(), "test") != flags.end()) {
+                say("Test mode: leaving GitHub repositories tracked.");
+                return;
+            }
+            std::cout << "No tracked packages are installed. Stop tracking the selected repositories? " << std::flush;
+            if (!libdnf5::cli::utils::userconfirm::userconfirm(config)) {
+                throw std::runtime_error("GitHub repository removal cancelled");
+            }
+            for (const auto & t : targets) {
+                removal.store.remove(t);
+            }
+            return;
+        }
+        const auto ids = get_context().get_base().get_transaction_history()->list_transaction_ids();
+        removal.previous_history_id = ids.empty() ? 0 : ids.back();
+        for (const auto & t : targets) {
             for (const auto & p : t.packages) {
                 goal->add_remove(p);
             }
-            pending.push_back(t);
         }
-    }
-
-    // Only forget the repositories once the removal transaction went through.
-    void goal_resolved() override {
-        dnf5::Command::goal_resolved();
-        for (const auto & t : pending) {
-            store.remove(t);
-        }
+        removal.projects = std::move(targets);
     }
 
 private:
     std::unique_ptr<libdnf5::cli::session::StringArgumentList> specs;
-    std::vector<Tracked> pending;
-    std::unique_ptr<StoreLock> lock;
+    PendingRemoval & removal;
 };
 
 class GhRootCommand : public dnf5::Command {
 public:
-    explicit GhRootCommand(dnf5::Context & ctx) : dnf5::Command(ctx, "gh") {}
+    GhRootCommand(dnf5::Context & ctx, PendingRemoval & removal)
+        : dnf5::Command(ctx, "gh"), removal(removal) {}
 
     void set_parent_command() override {
         auto * root = get_session().get_argument_parser().get_root_command();
@@ -340,10 +378,13 @@ public:
         register_subcommand(std::make_unique<GhInstallCommand>(ctx));
         register_subcommand(std::make_unique<GhUpdateCommand>(ctx));
         register_subcommand(std::make_unique<GhTrackedProjectsCommand>(ctx));
-        register_subcommand(std::make_unique<GhRemoveCommand>(ctx));
+        register_subcommand(std::make_unique<GhRemoveCommand>(ctx, removal));
     }
 
     void run() override { throw_missing_command(); }
+
+private:
+    PendingRemoval & removal;
 };
 
 class GhPlugin : public dnf5::IPlugin {
@@ -367,11 +408,38 @@ public:
     std::vector<std::unique_ptr<dnf5::Command>> create_commands() override {
         auto & ctx = get_context();
         std::vector<std::unique_ptr<dnf5::Command>> cmds;
-        cmds.push_back(std::make_unique<GhRootCommand>(ctx));
+        cmds.push_back(std::make_unique<GhRootCommand>(ctx, removal));
         return cmds;
     }
 
-    void finish() noexcept override {}
+    void finish() noexcept override {
+        if (removal.projects.empty()) {
+            return;
+        }
+        try {
+            auto history = get_context().get_base().get_transaction_history();
+            const auto ids = history->list_transaction_ids();
+            if (ids.empty() || ids.back() <= removal.previous_history_id) {
+                return;
+            }
+            const auto latest = history->get_latest_transaction();
+            if (latest.get_description() != get_context().get_cmdline()) {
+                get_context().print_error("Warning: cannot identify the GitHub removal transaction; tracking retained");
+                return;
+            }
+            if (latest.get_state() != libdnf5::transaction::TransactionState::OK) {
+                return;
+            }
+            for (const auto & t : removal.projects) {
+                removal.store.remove(t);
+            }
+        } catch (const std::exception & ex) {
+            get_context().print_error(std::string("Warning: cannot remove GitHub tracking after transaction: ") + ex.what());
+        }
+    }
+
+private:
+    PendingRemoval removal;
 };
 
 }  // namespace

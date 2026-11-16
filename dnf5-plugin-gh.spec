@@ -14,6 +14,7 @@ BuildRequires:  pkgconfig(libdnf5-cli)
 BuildRequires:  dnf5-devel
 BuildRequires:  libcurl-devel
 BuildRequires:  json-devel
+BuildRequires:  pkgconfig(rpm)
 
 Requires:       dnf5%{?_isa}
 Requires:       createrepo_c

@@ -21,10 +21,12 @@ std::string refresh_repository(Store & store, Client & client, Tracked & tracked
         throw std::runtime_error("no release with an rpm for " + arch);
     }
     const auto & release = releases[*index];
+    auto old = tracked.tag;
+    auto prepared = store.prepare(client, tracked, compatible_assets(release, arch));
     std::vector<Asset> assets;
     std::set<std::string> found;
-    for (const auto & asset : compatible_assets(release, arch)) {
-        auto name = rpm_package_name(asset.name);
+    for (const auto & asset : unique_package_assets(prepared->assets)) {
+        const auto & name = asset.package_name;
         if (std::find(tracked.packages.begin(), tracked.packages.end(), name) != tracked.packages.end()) {
             assets.push_back(asset);
             found.insert(name);
@@ -38,9 +40,8 @@ std::string refresh_repository(Store & store, Client & client, Tracked & tracked
     if (assets.empty()) {
         throw std::runtime_error("release " + release.tag + " lacks the tracked packages");
     }
-    auto old = tracked.tag;
     if (release.tag != old) {
-        store.sync(client, tracked, assets);
+        store.sync(client, tracked, assets, prepared->path);
     }
     record_release(store, tracked, release.tag);
     return release.tag == old ? tracked.slug() + ": up to date (" + old + ")"
