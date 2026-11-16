@@ -30,10 +30,27 @@ int main() {
     auto releases = parse_releases(RELEASES);
     assert(releases.size() == 3);
 
-    assert(rpm_arch("foo-2.0.0-1.x86_64.rpm") == "x86_64");
-    assert(rpm_arch("foo.tar.gz").empty());
+    assert(rpm_arch("foo-2.0.0-1.x86_64.rpm", "x86_64") == "x86_64");
+    assert(rpm_arch("winboat-0.9.2-x86_64.rpm", "x86_64") == "x86_64");
+    assert(rpm_arch("winboat_0.9.2_x86_64.rpm", "x86_64") == "x86_64");
+    assert(rpm_arch("foo-2.0.0-aarch64.rpm", "x86_64").empty());
+    assert(rpm_arch("foo-2.0.0-noarch.rpm", "x86_64") == "noarch");
+    assert(rpm_arch("foo.tar.gz", "x86_64").empty());
     assert(rpm_package_name("foo-data-2.0.0-1.noarch.rpm") == "foo-data");
     assert(rpm_package_name("bad.rpm").empty());
+
+    Release alternate_names;
+    alternate_names.assets = {
+        {"winboat-0.9.2-x86_64.rpm", "https://x/winboat", 10},
+        {"winboat_0.9.2_x86_64.rpm", "https://x/winboat-alt", 10},
+        {"foo-2.0.0-aarch64.rpm", "https://x/aarch64", 10},
+        {"foo-2.0.0-noarch.rpm", "https://x/noarch", 10},
+    };
+    auto alternate_compatible = compatible_assets(alternate_names, "x86_64");
+    assert(alternate_compatible.size() == 3);
+    assert(alternate_compatible[0].name == "winboat-0.9.2-x86_64.rpm");
+    assert(alternate_compatible[1].name == "winboat_0.9.2_x86_64.rpm");
+    assert(alternate_compatible[2].name == "foo-2.0.0-noarch.rpm");
 
     auto stable = pick_release(releases, "x86_64", false);
     assert(stable && releases[*stable].tag == "v2.0.0");

@@ -9,11 +9,8 @@
 
 namespace ghplugin {
 
-// Architecture of the running system, as used in RPM file names (e.g. x86_64).
-std::string system_arch();
-
-// Returns the arch field of an "<name>-<ver>-<rel>.<arch>.rpm" file name, or empty if not an rpm.
-std::string rpm_arch(const std::string & filename);
+// Returns `arch` or "noarch" when the RPM asset name has a matching architecture suffix, otherwise empty.
+std::string rpm_arch(const std::string & filename, const std::string & arch);
 
 // Binary rpm assets installable on `arch` (matching arch or noarch; no debuginfo/debugsource).
 std::vector<Asset> compatible_assets(const Release & release, const std::string & arch);

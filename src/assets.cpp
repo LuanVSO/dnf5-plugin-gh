@@ -1,38 +1,47 @@
 #include "assets.hpp"
 
-#include <sys/utsname.h>
-
 #include <regex>
 #include <stdexcept>
+#include <string_view>
 
 namespace ghplugin {
 
-std::string system_arch() {
-    utsname u{};
-    if (uname(&u) != 0) {
-        return "x86_64";
+namespace {
+
+bool has_arch_suffix(const std::string & stem, std::string_view arch) {
+    if (stem.size() <= arch.size()) {
+        return false;
     }
-    return u.machine;
+    const auto offset = stem.size() - arch.size();
+    if (stem.compare(offset, arch.size(), arch) != 0) {
+        return false;
+    }
+    const auto separator = stem[offset - 1];
+    return separator == '.' || separator == '-' || separator == '_';
 }
 
-std::string rpm_arch(const std::string & filename) {
+}  // namespace
+
+std::string rpm_arch(const std::string & filename, const std::string & system_arch) {
     static const std::string ext = ".rpm";
     if (filename.size() <= ext.size() || filename.compare(filename.size() - ext.size(), ext.size(), ext) != 0) {
         return {};
     }
     auto stem = filename.substr(0, filename.size() - ext.size());
-    auto dot = stem.rfind('.');
-    if (dot == std::string::npos || dot + 1 == stem.size()) {
-        return {};
+
+    if (has_arch_suffix(stem, system_arch)) {
+        return system_arch;
     }
-    return stem.substr(dot + 1);
+    if (has_arch_suffix(stem, "noarch")) {
+        return "noarch";
+    }
+    return {};
 }
 
 std::vector<Asset> compatible_assets(const Release & release, const std::string & arch) {
     std::vector<Asset> out;
     for (const auto & a : release.assets) {
-        auto a_arch = rpm_arch(a.name);
-        if (a_arch.empty() || (a_arch != arch && a_arch != "noarch")) {
+        if (rpm_arch(a.name, arch).empty()) {
             continue;
         }
         if (a.name.find("-debuginfo-") != std::string::npos || a.name.find("-debugsource-") != std::string::npos) {

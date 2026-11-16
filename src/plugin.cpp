@@ -91,7 +91,7 @@ public:
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::ENABLED);
         lock = store.lock();
         Client client;
-        auto arch = system_arch();
+        auto arch = ctx.get_base().get_vars()->get_value("arch");
         for (const auto & spec : specs->get_value()) {
             auto plan = fetch_install_plan(client, spec, arch, prerelease->get_value());
             auto chosen = choose(spec, plan.candidates);
@@ -208,7 +208,7 @@ public:
     void run() override {
         auto lock = store.lock();
         Client client;
-        auto arch = system_arch();
+        auto arch = get_context().get_base().get_vars()->get_value("arch");
         auto targets = resolve_targets(specs->get_value());
         if (targets.empty()) {
             say("No tracked GitHub repositories.");

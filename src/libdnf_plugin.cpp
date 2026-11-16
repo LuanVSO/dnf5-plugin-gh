@@ -92,7 +92,8 @@ public:
                     for (auto & repo : repos) {
                         if (ghplugin::refresh_due(t, now)) {
                             std::cerr << "GitHub: "
-                                      << ghplugin::refresh_repository(store, client, t, ghplugin::system_arch()) << '\n';
+                                      << ghplugin::refresh_repository(store, client, t, base.get_vars()->get_value("arch"))
+                                      << '\n';
                         }
                         // Existing repo files may still have metadata_expire=never.
                         repo->expire();
