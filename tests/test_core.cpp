@@ -5,6 +5,7 @@
 
 #undef NDEBUG
 #include <cassert>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -62,9 +63,50 @@ int main() {
     assert(is_github_repo_id("gh-owner_repo"));
     assert(!is_github_repo_id("third-party"));
 
-    auto tmp = std::filesystem::temp_directory_path() / "ghplugin-test";
-    std::filesystem::remove_all(tmp);
+    auto tmp_pattern = (std::filesystem::temp_directory_path() / "ghplugin-test-XXXXXX").string();
+    std::vector<char> tmp_buffer(tmp_pattern.begin(), tmp_pattern.end());
+    tmp_buffer.push_back('\0');
+    auto * tmp_created = mkdtemp(tmp_buffer.data());
+    assert(tmp_created);
+    std::filesystem::path tmp(tmp_created);
     Store store(tmp / "state", tmp / "conf");
+    std::filesystem::create_directories(tmp / "conf");
+    Tracked sync_tracked{"sync", "repo", "v1", false, {"foo"}};
+    auto sync_dir = store.dir(sync_tracked);
+    std::filesystem::create_directories(sync_dir / "repodata");
+    std::filesystem::create_directories(sync_dir / "keep.rpm");
+    std::ofstream(sync_dir / "repodata" / "old") << "old metadata";
+    std::ofstream(sync_dir / "foo-1-1.x86_64.rpm") << "old";
+    std::ofstream(sync_dir / "foo-2-1.x86_64.rpm") << "new";
+    std::ofstream(sync_dir / "notes.txt") << "keep";
+    const std::vector<Asset> sync_assets{{"foo-2-1.x86_64.rpm", "https://example.test/foo.rpm", 3}};
+    Client client;
+    Store failing_store(tmp / "state", tmp / "conf", "/bin/false");
+    try {
+        failing_store.sync(client, sync_tracked, sync_assets);
+        assert(false);
+    } catch (const std::runtime_error &) {
+    }
+    assert(std::filesystem::exists(sync_dir / "foo-1-1.x86_64.rpm"));
+    assert(std::filesystem::exists(sync_dir / "repodata" / "old"));
+
+    auto createrepo = tmp / "createrepo";
+    {
+        std::ofstream script(createrepo);
+        script << "#!/bin/sh\nmkdir \"$3/repodata\"\necho new > \"$3/repodata/new\"\n";
+    }
+    std::filesystem::permissions(createrepo, std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::add);
+    Store sync_store(tmp / "state", tmp / "conf", createrepo.string());
+    sync_store.sync(client, sync_tracked, sync_assets);
+    assert(!std::filesystem::exists(sync_dir / "foo-1-1.x86_64.rpm"));
+    assert(std::filesystem::exists(sync_dir / "foo-2-1.x86_64.rpm"));
+    assert(std::filesystem::exists(sync_dir / "repodata" / "new"));
+    assert(std::filesystem::exists(sync_dir / "notes.txt"));
+    assert(std::filesystem::is_directory(sync_dir / "keep.rpm"));
+    sync_store.sync(client, sync_tracked, sync_assets);
+    assert(std::filesystem::exists(sync_dir / "foo-2-1.x86_64.rpm"));
+
     Tracked package_state{"owner", "repo", "v1", false, {"foo", "bar"}};
     PackageNamesByRepo removed{{store.legacy_repo_id(package_state), {"foo"}}};
     PackageNamesByRepo installed{{store.repo_id(package_state), {"baz"}}};

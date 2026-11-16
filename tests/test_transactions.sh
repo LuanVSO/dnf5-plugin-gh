@@ -121,9 +121,12 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test "$(sha256sum /var/lib/dnf5-gh/modrinth_code/repodata/repomd.xml)" = "$before_metadata"
     test "$(sha256sum /var/lib/dnf5-gh/modrinth_code/state.json)" = "$before_state"
     test "$(rpm --root "$work/root" -q --qf "%{VERSION}" Modrinth.App)" = 0.23.1
+    test -f "/var/lib/dnf5-gh/modrinth_code/Modrinth.App-0.23.1-1.$arch.rpm"
     rm "$work/fail-asset"
     dnf5 "${options[@]}" --nogpgcheck -y update
     test "$(rpm --root "$work/root" -q --qf "%{VERSION}" Modrinth.App)" = 0.23.2
+    test ! -e "/var/lib/dnf5-gh/modrinth_code/Modrinth.App-0.23.1-1.$arch.rpm"
+    test -f "/var/lib/dnf5-gh/modrinth_code/Modrinth.App-0.23.2-1.$arch.rpm"
     test "$(wc -l < "$work/requests")" -eq "$((before + 2))"
     dnf5 "${options[@]}" --nogpgcheck -y upgrade
     test "$(wc -l < "$work/requests")" -eq "$((before + 2))"

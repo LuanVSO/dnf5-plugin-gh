@@ -2,6 +2,7 @@
 /build-*/
 /cmake-build-*/
 /results_dnf5-plugin-gh/
+/dnf5-plugin-gh.tar.gz
 /dnf5-plugin-gh-*.tar.gz
 *.rpm
 __pycache__/

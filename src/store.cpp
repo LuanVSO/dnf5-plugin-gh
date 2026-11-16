@@ -311,6 +311,12 @@ std::vector<fs::path> Store::sync(Client & client, const Tracked & t, const std:
     } else {
         fs::rename(staged_metadata, metadata);
     }
+    for (const auto & entry : fs::directory_iterator(d)) {
+        const auto name = entry.path().filename().string();
+        if (is_safe_rpm_name(name) && !wanted.count(name) && !entry.is_directory()) {
+            fs::remove(entry.path());
+        }
+    }
     return paths;
 }
 

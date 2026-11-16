@@ -23,9 +23,10 @@ Every eligible dnf5 invocation automatically checks each enabled tracked
 GitHub repository at most once every 24 hours. Repositories are refreshed
 before resolving transactions, so available updates can be installed normally.
 `dnf5 gh-update` forces an immediate check, regardless of the interval.
-On a failed refresh, a warning is printed and the previous repository remains
-available; the next update retries. Old RPMs are retained to keep existing
-metadata usable.
+If preparing a refresh fails, a warning is printed and the previous repository
+remains available; the next update retries. After new metadata is published,
+RPMs not selected for the refreshed repository are removed. Clients using
+cached older metadata may need to refresh it before downloading packages.
 
 Automatic refresh requires the enabled libdnf5 `gh` plugin. It is skipped for
 non-root runs, `--cacheonly`, disabled repositories, and alternate installroots
