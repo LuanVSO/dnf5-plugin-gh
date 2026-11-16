@@ -162,17 +162,36 @@ int main() {
     unsetenv("GITHUB_TOKEN");
     unsetenv("GH_TOKEN");
     auto token_config = tmp / "gh.conf";
+    auto private_token_config = tmp / "gh.d" / "token.conf";
     {
         std::ofstream config(token_config);
         config << "[main]\nenabled = 1\ntoken = config-token\n";
     }
-    assert(resolve_github_token(token_config) == "config-token");
+    assert(resolve_github_token(token_config, private_token_config) == "config-token");
+    std::filesystem::create_directory(private_token_config.parent_path());
+    {
+        std::ofstream config(private_token_config);
+        config << "[main]\ntoken = private-token\n";
+    }
+    assert(resolve_github_token(token_config, private_token_config) == "private-token");
+    {
+        std::ofstream config(private_token_config);
+        config << "[main]\n";
+    }
+    assert(resolve_github_token(token_config, private_token_config) == "config-token");
+    {
+        std::ofstream config(private_token_config);
+        config << "[main]\ntoken = private-token\n";
+    }
     setenv("GH_TOKEN", "environment-token", 1);
-    assert(resolve_github_token(token_config) == "environment-token");
+    assert(resolve_github_token(token_config, private_token_config) == "environment-token");
     setenv("GITHUB_TOKEN", "preferred-token", 1);
-    assert(resolve_github_token(token_config) == "preferred-token");
+    assert(resolve_github_token(token_config, private_token_config) == "preferred-token");
     unsetenv("GITHUB_TOKEN");
     unsetenv("GH_TOKEN");
+    std::filesystem::remove(private_token_config);
+    std::filesystem::remove(token_config);
+    assert(resolve_github_token(token_config, private_token_config).empty());
     if (old_github_token) {
         setenv("GITHUB_TOKEN", old_github_token->c_str(), 1);
     }
@@ -193,7 +212,13 @@ int main() {
     std::ofstream(sync_dir / "nested" / ".stale.rpm") << "stale";
     std::ofstream(sync_dir / "notes.txt") << "keep";
     const std::vector<Asset> sync_assets{{"foo-2-1.x86_64.rpm", "https://example.test/foo-2-1.x86_64.rpm", 3, "foo"}};
+    setenv("GITHUB_TOKEN", "test-token", 1);
     Client client;
+    if (old_github_token) {
+        setenv("GITHUB_TOKEN", old_github_token->c_str(), 1);
+    } else {
+        unsetenv("GITHUB_TOKEN");
+    }
     Store failing_store(tmp / "state", tmp / "conf", "/bin/false");
     try {
         failing_store.sync(client, sync_tracked, sync_assets);

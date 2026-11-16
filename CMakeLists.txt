@@ -41,12 +41,18 @@ set(DNF5_PLUGIN_DIR "${CMAKE_INSTALL_FULL_LIBDIR}/dnf5/plugins" CACHE PATH "dnf5
 set(LIBDNF5_PLUGIN_DIR "${CMAKE_INSTALL_FULL_LIBDIR}/libdnf5/plugins" CACHE PATH "libdnf5 plugin directory")
 set(LIBDNF5_PLUGIN_CONFIG_DIR "${CMAKE_INSTALL_FULL_SYSCONFDIR}/dnf/libdnf5-plugins" CACHE PATH "libdnf5 plugin configuration directory")
 target_compile_definitions(ghcore PRIVATE GH_CONFIG_FILE="${LIBDNF5_PLUGIN_CONFIG_DIR}/gh.conf")
+target_compile_definitions(ghcore PRIVATE GH_TOKEN_FILE="${LIBDNF5_PLUGIN_CONFIG_DIR}/gh.d/token.conf")
 install(TARGETS gh_cmd_plugin LIBRARY DESTINATION ${DNF5_PLUGIN_DIR})
 install(TARGETS gh LIBRARY DESTINATION ${LIBDNF5_PLUGIN_DIR})
-install(FILES gh.conf DESTINATION ${LIBDNF5_PLUGIN_CONFIG_DIR} PERMISSIONS OWNER_READ OWNER_WRITE)
+install(FILES gh.conf DESTINATION ${LIBDNF5_PLUGIN_CONFIG_DIR}
+    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ COMPONENT plugin_config)
 
 if(BUILD_TESTING)
     add_executable(test_core tests/test_core.cpp)
     target_link_libraries(test_core PRIVATE ghcore)
     add_test(NAME core COMMAND test_core)
+    add_test(NAME config_install COMMAND ${CMAKE_COMMAND}
+        "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+        "-DCONFIG_DIR=${LIBDNF5_PLUGIN_CONFIG_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_config_install.cmake")
 endif()

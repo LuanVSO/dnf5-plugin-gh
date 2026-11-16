@@ -14,6 +14,10 @@
 #define GH_CONFIG_FILE "/etc/dnf/libdnf5-plugins/gh.conf"
 #endif
 
+#ifndef GH_TOKEN_FILE
+#define GH_TOKEN_FILE "/etc/dnf/libdnf5-plugins/gh.d/token.conf"
+#endif
+
 namespace ghplugin {
 
 std::vector<Release> parse_releases(const std::string & json) {
@@ -81,29 +85,33 @@ CurlPtr make_handle(const std::string & token, curl_slist *& headers, bool api) 
 
 }  // namespace
 
-std::string resolve_github_token(const std::filesystem::path & config_file) {
+std::string resolve_github_token(
+    const std::filesystem::path & config_file, const std::filesystem::path & token_file) {
     for (const char * var : {"GITHUB_TOKEN", "GH_TOKEN"}) {
         if (const char * value = std::getenv(var); value && *value) {
             return value;
         }
     }
 
-    const auto path = config_file.empty() ? std::filesystem::path(GH_CONFIG_FILE) : config_file;
-    std::error_code ec;
-    const bool exists = std::filesystem::exists(path, ec);
-    if (ec) {
-        throw std::filesystem::filesystem_error("cannot check GitHub plugin config", path, ec);
-    }
-    if (!exists) {
-        return {};
-    }
+    const auto private_path = token_file.empty() ? std::filesystem::path(GH_TOKEN_FILE) : token_file;
+    const auto legacy_path = config_file.empty() ? std::filesystem::path(GH_CONFIG_FILE) : config_file;
+    for (const auto & path : {private_path, legacy_path}) {
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(path, ec);
+        if (ec) {
+            throw std::filesystem::filesystem_error("cannot check GitHub plugin config", path, ec);
+        }
+        if (!exists) {
+            continue;
+        }
 
-    libdnf5::ConfigParser parser;
-    parser.read(path.string());
-    if (!parser.has_option("main", "token")) {
-        return {};
+        libdnf5::ConfigParser parser;
+        parser.read(path.string());
+        if (parser.has_option("main", "token")) {
+            return parser.get_value("main", "token");
+        }
     }
-    return parser.get_value("main", "token");
+    return {};
 }
 
 Client::Client(std::string api_base) : api_base(std::move(api_base)) {
@@ -131,7 +139,7 @@ std::vector<Release> Client::fetch_releases(const std::string & owner, const std
     if (status == 403 || status == 429) {
         throw std::runtime_error(
             "GitHub API rate limit or access denied (HTTP " + std::to_string(status) +
-            "); set GITHUB_TOKEN or configure token in gh.conf");
+            "); set GITHUB_TOKEN or configure token in " GH_TOKEN_FILE);
     }
     if (status != 200) {
         throw std::runtime_error("GitHub API returned HTTP " + std::to_string(status));
