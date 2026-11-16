@@ -101,8 +101,10 @@ int main() {
     std::ofstream(sync_dir / "repodata" / "old") << "old metadata";
     std::ofstream(sync_dir / "foo-1-1.x86_64.rpm") << "old";
     std::ofstream(sync_dir / "foo-2-1.x86_64.rpm") << "new";
+    std::filesystem::create_directories(sync_dir / "nested");
+    std::ofstream(sync_dir / "nested" / ".stale.rpm") << "stale";
     std::ofstream(sync_dir / "notes.txt") << "keep";
-    const std::vector<Asset> sync_assets{{"foo-2-1.x86_64.rpm", "https://example.test/foo.rpm", 3}};
+    const std::vector<Asset> sync_assets{{"foo-2-1.x86_64.rpm", "https://example.test/foo-2-1.x86_64.rpm", 3, "foo"}};
     Client client;
     Store failing_store(tmp / "state", tmp / "conf", "/bin/false");
     try {
@@ -116,19 +118,19 @@ int main() {
     auto createrepo = tmp / "createrepo";
     {
         std::ofstream script(createrepo);
-        script << "#!/bin/sh\nmkdir \"$3/repodata\"\necho new > \"$3/repodata/new\"\n";
+        script << "#!/bin/sh\nmkdir \"$5/repodata\"\necho new > \"$5/repodata/new\"\n";
     }
     std::filesystem::permissions(createrepo, std::filesystem::perms::owner_exec,
                                  std::filesystem::perm_options::add);
     Store sync_store(tmp / "state", tmp / "conf", createrepo.string());
     sync_store.sync(client, sync_tracked, sync_assets);
     assert(!std::filesystem::exists(sync_dir / "foo-1-1.x86_64.rpm"));
-    assert(std::filesystem::exists(sync_dir / "foo-2-1.x86_64.rpm"));
+    assert(!std::filesystem::exists(sync_dir / "foo-2-1.x86_64.rpm"));
+    assert(!std::filesystem::exists(sync_dir / "nested" / ".stale.rpm"));
     assert(std::filesystem::exists(sync_dir / "repodata" / "new"));
     assert(std::filesystem::exists(sync_dir / "notes.txt"));
     assert(std::filesystem::is_directory(sync_dir / "keep.rpm"));
-    sync_store.sync(client, sync_tracked, sync_assets);
-    assert(std::filesystem::exists(sync_dir / "foo-2-1.x86_64.rpm"));
+    assert(sync_store.has_remote_metadata(sync_tracked));
 
     Tracked package_state{"owner", "repo", "v1", false, {"foo", "bar"}};
     PackageNamesByRepo removed{{store.legacy_repo_id(package_state), {"foo"}}};

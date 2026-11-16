@@ -90,7 +90,7 @@ public:
                     repos.filter_enabled(true);
                     repos.filter_type(libdnf5::repo::Repo::Type::AVAILABLE);
                     for (auto & repo : repos) {
-                        if (ghplugin::refresh_due(t, now)) {
+                        if (ghplugin::refresh_due(t, now) || !store.has_remote_metadata(t)) {
                             std::cerr << "GitHub: "
                                       << ghplugin::refresh_repository(store, client, t, base.get_vars()->get_value("arch"))
                                       << '\n';
@@ -173,6 +173,22 @@ public:
     }
 
     void post_transaction(const libdnf5::base::Transaction &) override {
+        const auto & config = get_base().get_config();
+        if (geteuid() == 0 && !std::getenv("DNF5_GH_OWN_TRANSACTION") &&
+            (config.get_installroot_option().get_value() == "/" ||
+             config.get_use_host_config_option().get_value())) {
+            try {
+                ghplugin::Store store;
+                auto lock = store.lock();
+                for (const auto & tracked : store.list()) {
+                    if (store.has_remote_metadata(tracked)) {
+                        store.remove_rpms(tracked);
+                    }
+                }
+            } catch (const std::exception & ex) {
+                std::cerr << "Warning: cannot clean GitHub repository RPMs: " << ex.what() << '\n';
+            }
+        }
         if (removed_packages.empty() && installed_packages.empty()) {
             return;
         }

@@ -73,9 +73,10 @@ public:
     void save(const Tracked & t) const;
     void remove(const Tracked & t) const;
     std::unique_ptr<PreparedAssets> prepare(Client & client, const Tracked & t, const std::vector<Asset> & assets) const;
+    bool has_remote_metadata(const Tracked & t) const;
+    void remove_rpms(const Tracked & t) const;
 
-    // Makes the local repo contain exactly `assets` (downloads missing, drops stale), regenerates
-    // metadata and writes the dnf repo file. Returns the paths of the rpm files in the repo.
+    // Publishes metadata referring to release assets and returns their repository locations.
     std::vector<std::filesystem::path> sync(
         Client & client, const Tracked & t, const std::vector<Asset> & assets,
         const std::filesystem::path & prepared = {}) const;

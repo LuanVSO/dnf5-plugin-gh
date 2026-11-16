@@ -2,9 +2,11 @@
 
 A dnf5 plugin that installs and updates RPMs published as GitHub release assets.
 
-Each tracked project gets a local repository under `/var/lib/dnf5-gh/<owner>_<repo>/`
-(RPMs + `createrepo_c` metadata) and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
+Each tracked project gets local `createrepo_c` metadata under
+`/var/lib/dnf5-gh/<owner>_<repo>/` and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
 so dnf5 resolves, upgrades and removes those packages natively.
+The metadata points to GitHub release assets: DNF downloads the packages needed
+for a transaction, and the local repository does not retain RPM files.
 New installs are recorded as originating from `gh:<owner>:<repo>`. A slash
 cannot be used in a dnf repository ID. Existing `gh-<owner>_<repo>` files are
 migrated when the project is refreshed or installed again; existing installed
@@ -29,9 +31,11 @@ GitHub repository at most once every 24 hours. Repositories are refreshed
 before resolving transactions, so available updates can be installed normally.
 `dnf5 gh update` forces an immediate check, regardless of the interval.
 If preparing a refresh fails, a warning is printed and the previous repository
-remains available; the next update retries. After new metadata is published,
-RPMs not selected for the refreshed repository are removed. Clients using
+remains available; the next update retries. Existing repositories are migrated
+to remote asset locations on their next successful refresh; their old RPMs are
+retained until then so their existing metadata continues to work. Clients using
 cached older metadata may need to refresh it before downloading packages.
+DNF's own package cache is controlled separately by its `keepcache` setting.
 
 Automatic refresh requires the enabled libdnf5 `gh` plugin. It is skipped for
 non-root runs, `--cacheonly`, disabled repositories, and alternate installroots

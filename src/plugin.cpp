@@ -77,7 +77,8 @@ protected:
 
 class GhInstallCommand : public GhCommand {
 public:
-    explicit GhInstallCommand(dnf5::Context & ctx) : GhCommand(ctx, "install") {}
+    GhInstallCommand(dnf5::Context & ctx, PendingRemoval & removal)
+        : GhCommand(ctx, "install"), removal(removal) {}
 
     void set_argument_parser() override {
         auto & ctx = get_context();
@@ -101,7 +102,7 @@ public:
         auto & ctx = get_context();
         ctx.set_load_system_repo(true);
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::ENABLED);
-        lock = store.lock();
+        removal.lock = store.lock();
         Client client;
         auto arch = ctx.get_base().get_vars()->get_value("arch");
         for (const auto & spec : specs->get_value()) {
@@ -155,7 +156,7 @@ private:
     std::unique_ptr<libdnf5::cli::session::BoolOption> prerelease;
     std::unique_ptr<libdnf5::cli::session::BoolOption> all;
     std::vector<std::pair<std::string, std::string>> selected;
-    std::unique_ptr<StoreLock> lock;
+    PendingRemoval & removal;
 
     // Reduces the candidate assets to the ones to install, one per package name.
     std::vector<Asset> choose(const std::string & spec, const std::vector<Asset> & candidates) {
@@ -375,7 +376,7 @@ public:
 
     void register_subcommands() override {
         auto & ctx = get_context();
-        register_subcommand(std::make_unique<GhInstallCommand>(ctx));
+        register_subcommand(std::make_unique<GhInstallCommand>(ctx, removal));
         register_subcommand(std::make_unique<GhUpdateCommand>(ctx));
         register_subcommand(std::make_unique<GhTrackedProjectsCommand>(ctx));
         register_subcommand(std::make_unique<GhRemoveCommand>(ctx, removal));
@@ -413,6 +414,19 @@ public:
     }
 
     void finish() noexcept override {
+        if (geteuid() == 0 && std::getenv("DNF5_GH_OWN_TRANSACTION")) {
+            try {
+                Store store;
+                auto lock = removal.lock ? nullptr : store.lock();
+                for (const auto & tracked : store.list()) {
+                    if (store.has_remote_metadata(tracked)) {
+                        store.remove_rpms(tracked);
+                    }
+                }
+            } catch (const std::exception & ex) {
+                get_context().print_error(std::string("Warning: cannot clean GitHub repository RPMs: ") + ex.what());
+            }
+        }
         if (removal.projects.empty()) {
             return;
         }

@@ -9,11 +9,13 @@ work, arch = sys.argv[1:]
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/assets/"):
+        if self.path.startswith(("/assets/", "/alternate/")):
+            with open(os.path.join(work, "asset-requests"), "a") as log:
+                log.write(self.path + "\n")
             if os.path.exists(os.path.join(work, "fail-asset")):
                 self.send_error(503)
                 return
-            name = self.path.removeprefix("/assets/")
+            name = self.path.rsplit("/", 1)[-1]
             path = os.path.join(work, "fixtures", name)
             if not os.path.isfile(path):
                 self.send_error(404)
@@ -47,7 +49,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data_path = os.path.join(work, "fixtures", data_name)
             assets.append({
                 "name": data_name,
-                "browser_download_url": "https://api.github.com/assets/" + data_name,
+                "browser_download_url": "https://api.github.com/alternate/" + data_name,
                 "size": os.path.getsize(data_path),
             })
         data = json.dumps([{

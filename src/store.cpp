@@ -1,5 +1,6 @@
 #include "store.hpp"
 
+#include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <rpm/header.h>
 #include <rpm/rpmio.h>
@@ -197,6 +198,15 @@ std::vector<Tracked> Store::list() const {
             t.last_checked = j.value("last_checked", std::int64_t{0});
             std::map<std::string, std::set<std::string>> aliases;
             std::set<std::string> actual_names;
+            std::ifstream manifest(e.path() / "repodata" / "gh-assets.json");
+            if (manifest) {
+                auto assets = nlohmann::json::parse(manifest);
+                for (const auto & asset : assets) {
+                    auto name = asset.at("package").get<std::string>();
+                    actual_names.insert(name);
+                    aliases[rpm_package_name(asset.at("filename").get<std::string>())].insert(name);
+                }
+            }
             for (const auto & file : fs::directory_iterator(e.path())) {
                 if (!file.is_regular_file() || !is_safe_rpm_name(file.path().filename().string())) {
                     continue;
@@ -262,6 +272,18 @@ void Store::remove(const Tracked & t) const {
     fs::remove_all(dir(t));
 }
 
+bool Store::has_remote_metadata(const Tracked & t) const {
+    return fs::is_regular_file(dir(t) / "repodata" / "gh-assets.json");
+}
+
+void Store::remove_rpms(const Tracked & t) const {
+    for (const auto & entry : fs::recursive_directory_iterator(dir(t))) {
+        if (entry.path().extension() == ".rpm" && !entry.is_directory()) {
+            fs::remove(entry.path());
+        }
+    }
+}
+
 namespace {
 
 fs::path make_staging_dir(const fs::path & dir, const std::string & slug) {
@@ -276,13 +298,18 @@ fs::path make_staging_dir(const fs::path & dir, const std::string & slug) {
     return created;
 }
 
-void run_createrepo(const std::string & cmd, const fs::path & dir) {
+void run_command(const std::vector<std::string> & args) {
     pid_t pid = fork();
     if (pid < 0) {
         throw std::runtime_error("fork failed");
     }
     if (pid == 0) {
-        execlp(cmd.c_str(), cmd.c_str(), "--quiet", "--no-database", dir.c_str(), static_cast<char *>(nullptr));
+        std::vector<char *> argv;
+        for (const auto & arg : args) {
+            argv.push_back(const_cast<char *>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
         _exit(127);
     }
     int status = 0;
@@ -291,11 +318,29 @@ void run_createrepo(const std::string & cmd, const fs::path & dir) {
         waited = waitpid(pid, &status, 0);
     } while (waited < 0 && errno == EINTR);
     if (waited < 0) {
-        throw std::runtime_error("cannot wait for " + cmd + ": " + std::strerror(errno));
+        throw std::runtime_error("cannot wait for " + args[0] + ": " + std::strerror(errno));
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        throw std::runtime_error(cmd + " failed (is createrepo_c installed?)");
+        throw std::runtime_error(args[0] + " failed (is createrepo_c installed?)");
     }
+}
+
+std::string asset_base_url(const Asset & asset) {
+    const auto slash = asset.url.rfind('/');
+    if (asset.url.rfind("https://", 0) != 0 || slash == std::string::npos || slash < 8) {
+        throw std::runtime_error("refusing invalid asset url: " + asset.url);
+    }
+    const auto encoded = asset.url.substr(slash + 1);
+    if (encoded.find_first_of("?#") != std::string::npos) {
+        throw std::runtime_error("unsupported asset url: " + asset.url);
+    }
+    int length = 0;
+    std::unique_ptr<char, decltype(&curl_free)> decoded(
+        curl_easy_unescape(nullptr, encoded.c_str(), static_cast<int>(encoded.size()), &length), curl_free);
+    if (!decoded || std::string(decoded.get(), length) != asset.name) {
+        throw std::runtime_error("asset url does not match filename: " + asset.url);
+    }
+    return asset.url.substr(0, slash + 1);
 }
 
 }  // namespace
@@ -352,13 +397,13 @@ std::vector<fs::path> Store::sync(
 
     std::set<std::string> wanted;
     std::vector<fs::path> paths;
+    std::map<std::string, fs::path> groups;
+    nlohmann::json manifest = nlohmann::json::array();
     for (const auto & a : assets) {
         if (!is_safe_rpm_name(a.name)) {
             throw std::runtime_error("refusing unsafe asset name: " + a.name);
         }
-        if (a.url.rfind("https://", 0) != 0) {
-            throw std::runtime_error("refusing non-https asset url: " + a.url);
-        }
+        const auto base_url = asset_base_url(a);
         if (!wanted.insert(a.name).second) {
             throw std::runtime_error("duplicate asset name: " + a.name);
         }
@@ -377,13 +422,39 @@ std::vector<fs::path> Store::sync(
                 throw std::runtime_error("downloaded RPM has unexpected size: " + a.name);
             }
         }
+        auto [group, inserted] = groups.try_emplace(base_url, staging.path / ("group-" + std::to_string(groups.size())));
+        if (inserted) {
+            fs::create_directories(group->second);
+        }
+        fs::create_hard_link(staged, group->second / a.name);
+        const auto package_name = a.package_name.empty() ? rpm_header_name(staged) : a.package_name;
+        manifest.push_back({{"filename", a.name}, {"package", package_name}});
         paths.push_back(p);
     }
 
-    run_createrepo(createrepo_cmd, staging.path);
-    for (const auto & path : paths) {
-        if (!fs::exists(path)) {
-            fs::create_hard_link(staging.path / path.filename(), path);
+    if (groups.empty()) {
+        throw std::runtime_error("cannot publish an empty GitHub repository");
+    }
+    for (const auto & [url, group] : groups) {
+        run_command({createrepo_cmd, "--quiet", "--no-database", "--baseurl", url, group.string()});
+    }
+    auto staged_metadata = staging.path / "repodata";
+    if (groups.size() == 1) {
+        fs::rename(groups.begin()->second / "repodata", staged_metadata);
+    } else {
+        std::vector<std::string> args{"mergerepo_c", "--no-database", "--all", "--outputdir", staging.path.string()};
+        for (const auto & [url, group] : groups) {
+            args.push_back("--repo");
+            args.push_back("file://" + group.string());
+        }
+        run_command(args);
+    }
+    {
+        std::ofstream out(staged_metadata / "gh-assets.json");
+        out << manifest.dump(2) << '\n';
+        out.close();
+        if (!out) {
+            throw std::runtime_error("cannot write asset manifest for " + t.slug());
         }
     }
 
@@ -407,7 +478,6 @@ std::vector<fs::path> Store::sync(
         fs::rename(temporary_repo, repo_file(t));
     }
     auto metadata = d / "repodata";
-    auto staged_metadata = staging.path / "repodata";
     if (fs::exists(metadata)) {
         if (syscall(SYS_renameat2, AT_FDCWD, metadata.c_str(), AT_FDCWD, staged_metadata.c_str(), RENAME_EXCHANGE) != 0) {
             throw std::runtime_error("cannot replace repository metadata: " + std::string(std::strerror(errno)));
@@ -415,12 +485,7 @@ std::vector<fs::path> Store::sync(
     } else {
         fs::rename(staged_metadata, metadata);
     }
-    for (const auto & entry : fs::directory_iterator(d)) {
-        const auto name = entry.path().filename().string();
-        if (is_safe_rpm_name(name) && !wanted.count(name) && !entry.is_directory()) {
-            fs::remove(entry.path());
-        }
-    }
+    remove_rpms(t);
     return paths;
 }
 
