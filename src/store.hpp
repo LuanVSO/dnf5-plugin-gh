@@ -2,6 +2,8 @@
 
 #include "github.hpp"
 
+#include <libdnf5/utils/fs/temp.hpp>
+
 #include <filesystem>
 #include <cstdint>
 #include <optional>
@@ -46,13 +48,14 @@ private:
 };
 
 class PreparedAssets {
+    libdnf5::utils::fs::TempDir staging;
+
 public:
-    explicit PreparedAssets(std::filesystem::path path);
-    ~PreparedAssets();
+    explicit PreparedAssets(const std::filesystem::path & parent);
     PreparedAssets(const PreparedAssets &) = delete;
     PreparedAssets & operator=(const PreparedAssets &) = delete;
 
-    std::filesystem::path path;
+    const std::filesystem::path & path() const { return staging.get_path(); }
     std::vector<Asset> assets;
 };
 

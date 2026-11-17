@@ -142,6 +142,9 @@ public:
             throw std::runtime_error("cannot mark GitHub transaction");
         }
         auto & ctx = get_context();
+        ctx.print_error(
+            "Warning: GitHub release RPMs are third-party packages and are not GPG-verified by default; "
+            "install only from projects you trust.");
         ctx.set_load_system_repo(true);
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::ENABLED);
         removal.lock = store.lock();
@@ -169,7 +172,7 @@ public:
             for (auto & repo : old_repos) {
                 repo->disable();
             }
-            auto paths = install_release(store, client, t, plan, chosen, prepared->path);
+            auto paths = install_release(store, client, t, plan, chosen, prepared->path());
             libdnf5::repo::RepoQuery repos(ctx.get_base());
             repos.filter_id(store.repo_id(t));
             if (repos.empty()) {

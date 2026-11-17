@@ -23,8 +23,7 @@ add_library(ghcore STATIC
 target_include_directories(ghcore PUBLIC src)
 target_link_libraries(ghcore PUBLIC nlohmann_json::nlohmann_json ${CURL_LIBRARIES} ${RPM_LIBRARIES}
     PRIVATE ${LIBDNF5_LIBRARIES})
-target_include_directories(ghcore PUBLIC ${CURL_INCLUDE_DIRS} ${RPM_INCLUDE_DIRS}
-    PRIVATE ${LIBDNF5_INCLUDE_DIRS})
+target_include_directories(ghcore PUBLIC ${CURL_INCLUDE_DIRS} ${RPM_INCLUDE_DIRS} ${LIBDNF5_INCLUDE_DIRS})
 
 add_library(gh_cmd_plugin MODULE src/plugin.cpp)
 set_target_properties(gh_cmd_plugin PROPERTIES PREFIX "")

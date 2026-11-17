@@ -5,6 +5,8 @@
 #include "workflows.hpp"
 
 #include <libdnf5/base/base.hpp>
+#include <libdnf5/conf/config_parser.hpp>
+#include <libdnf5/conf/option_string_list.hpp>
 
 #undef NDEBUG
 #include <cassert>
@@ -102,6 +104,14 @@ int main() {
     auto * tmp_created = mkdtemp(tmp_buffer.data());
     assert(tmp_created);
     std::filesystem::path tmp(tmp_created);
+    std::filesystem::path prepared_path;
+    {
+        PreparedAssets prepared(tmp);
+        prepared_path = prepared.path();
+        std::ofstream(prepared_path / "asset") << "data";
+        assert(std::filesystem::exists(prepared_path / "asset"));
+    }
+    assert(!std::filesystem::exists(prepared_path));
 
     auto migration_old = tmp / "old-state";
     auto migration_new = tmp / "new-state";
@@ -125,13 +135,27 @@ int main() {
     auto new_url = "file://" + (migration_new / "owner_repo").string();
     {
         std::ofstream repo(migration_store.repo_file(relocated));
-        repo << "[gh:owner:repo]\n  baseurl = " << old_url << "/  \nenabled=0\n";
+        repo << "# preserved comment\n[gh:owner:repo]\nbaseurl = " << old_url
+             << "/\n  https://example.test/other\n  " << old_url << "-other\n"
+             << "enabled=0\n[other]\nbaseurl=https://example.test/unrelated\n";
     }
+    std::filesystem::permissions(
+        migration_store.repo_file(relocated), std::filesystem::perms::owner_read |
+        std::filesystem::perms::owner_write, std::filesystem::perm_options::replace);
     assert(!migration_store.migrate_repo(relocated));
     {
-        std::ifstream repo(migration_store.repo_file(relocated));
+        auto repo_file = migration_store.repo_file(relocated);
+        std::ifstream repo(repo_file);
         std::string contents((std::istreambuf_iterator<char>(repo)), {});
-        assert(contents == "[gh:owner:repo]\n  baseurl = " + new_url + "/  \nenabled=0\n");
+        assert(contents.find("# preserved comment\n") != std::string::npos);
+        assert(contents.find("enabled=0\n[other]\nbaseurl=https://example.test/unrelated\n") != std::string::npos);
+        libdnf5::ConfigParser parser;
+        parser.read(repo_file.string());
+        libdnf5::OptionStringList option(std::vector<std::string>{});
+        assert((option.from_string(parser.get_value("gh:owner:repo", "baseurl")) ==
+                std::vector<std::string>{new_url + "/", "https://example.test/other", old_url + "-other"}));
+        assert((std::filesystem::status(repo_file).permissions() & std::filesystem::perms::all) ==
+               (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write));
     }
     std::vector<std::string> urls{old_url, old_url + "/", old_url + "-other", "https://example.test/"};
     assert(migration_store.relocate_baseurls(relocated, urls));
@@ -248,6 +272,9 @@ int main() {
     }
     assert(std::filesystem::exists(sync_dir / "foo-1-1.x86_64.rpm"));
     assert(std::filesystem::exists(sync_dir / "repodata" / "old"));
+    for (const auto & entry : std::filesystem::directory_iterator(sync_dir)) {
+        assert(!entry.path().filename().string().starts_with(".staging-"));
+    }
 
     auto createrepo = tmp / "createrepo";
     {

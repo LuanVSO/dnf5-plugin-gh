@@ -41,7 +41,7 @@ std::string refresh_repository(Store & store, Client & client, Tracked & tracked
         throw std::runtime_error("release " + release.tag + " lacks the tracked packages");
     }
     if (release.tag != old || !store.has_remote_metadata(tracked)) {
-        store.sync(client, tracked, assets, prepared->path);
+        store.sync(client, tracked, assets, prepared->path());
     }
     record_release(store, tracked, release.tag);
     return release.tag == old ? tracked.slug() + ": up to date (" + old + ")"

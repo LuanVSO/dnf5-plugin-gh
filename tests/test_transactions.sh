@@ -128,6 +128,7 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     fi
     test "$(wc -l < "$work/requests")" -gt "$before_requests"
     test -s "$work/asset-requests"
+    grep -q "Warning: GitHub release RPMs are third-party packages and are not GPG-verified by default" "$work/insecure.log"
     if dnf5 "${options[@]}" --nogpgcheck --assumeno gh install modrinth/code; then
         echo "Declined install unexpectedly succeeded" >&2
         exit 1

@@ -1,6 +1,8 @@
 #include "store.hpp"
 
 #include <curl/curl.h>
+#include <libdnf5/conf/config_parser.hpp>
+#include <libdnf5/conf/option_string_list.hpp>
 #include <nlohmann/json.hpp>
 #include <rpm/header.h>
 #include <rpm/rpmio.h>
@@ -161,50 +163,26 @@ void Store::relocate_repo_config(const Tracked & t, const fs::path & path) const
     if (!fs::exists(path)) {
         return;
     }
-    std::ifstream in(path);
-    if (!in) {
-        throw std::runtime_error("cannot read " + path.string());
-    }
-    std::string line;
-    std::string contents;
+    libdnf5::ConfigParser parser;
+    parser.read(path.string());
+    libdnf5::OptionStringList baseurl_option(std::vector<std::string>{});
     bool changed = false;
-    while (std::getline(in, line)) {
-        auto equals = line.find('=');
-        if (equals != std::string::npos) {
-            auto key = line.substr(0, equals);
-            auto first = key.find_first_not_of(" \t");
-            auto last = key.find_last_not_of(" \t");
-            if (first != std::string::npos && key.substr(first, last - first + 1) == "baseurl") {
-                auto value_start = line.find_first_not_of(" \t", equals + 1);
-                auto value_end = line.find_last_not_of(" \t\r");
-                if (value_start != std::string::npos && value_end >= value_start) {
-                    std::vector<std::string> urls{line.substr(value_start, value_end - value_start + 1)};
-                    if (relocate_baseurls(t, urls)) {
-                        line.replace(value_start, value_end - value_start + 1, urls.front());
-                        changed = true;
-                    }
-                }
-            }
+    for (const auto & [section, options] : parser.get_data()) {
+        if (!parser.has_option(section, "baseurl")) {
+            continue;
         }
-        contents += line + '\n';
-    }
-    if (in.bad()) {
-        throw std::runtime_error("cannot read " + path.string());
+        auto urls = baseurl_option.from_string(parser.get_value(section, "baseurl"));
+        if (relocate_baseurls(t, urls)) {
+            parser.set_value(section, "baseurl", baseurl_option.to_string(urls));
+            changed = true;
+        }
     }
     if (!changed) {
         return;
     }
     auto temp = path;
     temp += ".tmp";
-    std::ofstream out(temp);
-    if (!out) {
-        throw std::runtime_error("cannot write " + temp.string());
-    }
-    out << contents;
-    out.close();
-    if (!out) {
-        throw std::runtime_error("cannot write " + temp.string());
-    }
+    parser.write(temp.string(), false);
     fs::permissions(temp, fs::status(path).permissions());
     fs::rename(temp, path);
 }
@@ -427,18 +405,6 @@ void Store::remove_rpms(const Tracked & t) const {
 
 namespace {
 
-fs::path make_staging_dir(const fs::path & dir, const std::string & slug) {
-    fs::create_directories(dir);
-    auto pattern = (dir / ".staging-XXXXXX").string();
-    std::vector<char> buffer(pattern.begin(), pattern.end());
-    buffer.push_back('\0');
-    char * created = mkdtemp(buffer.data());
-    if (!created) {
-        throw std::runtime_error("cannot create staging directory for " + slug + ": " + std::strerror(errno));
-    }
-    return created;
-}
-
 void run_command(const std::vector<std::string> & args) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -486,16 +452,12 @@ std::string asset_base_url(const Asset & asset) {
 
 }  // namespace
 
-PreparedAssets::PreparedAssets(fs::path path) : path(std::move(path)) {}
-
-PreparedAssets::~PreparedAssets() {
-    std::error_code ec;
-    fs::remove_all(path, ec);
-}
+PreparedAssets::PreparedAssets(const fs::path & parent) : staging(parent, ".staging-") {}
 
 std::unique_ptr<PreparedAssets> Store::prepare(
     Client & client, const Tracked & t, const std::vector<Asset> & assets) const {
-    auto result = std::make_unique<PreparedAssets>(make_staging_dir(dir(t), t.slug()));
+    fs::create_directories(dir(t));
+    auto result = std::make_unique<PreparedAssets>(dir(t));
     std::set<std::string> seen;
     for (auto asset : assets) {
         if (!is_safe_rpm_name(asset.name)) {
@@ -508,7 +470,7 @@ std::unique_ptr<PreparedAssets> Store::prepare(
             throw std::runtime_error("duplicate asset name: " + asset.name);
         }
         auto cached = dir(t) / asset.name;
-        auto staged = result->path / asset.name;
+        auto staged = result->path() / asset.name;
         if (fs::exists(cached)) {
             if (asset.size > 0 && static_cast<long long>(fs::file_size(cached)) != asset.size) {
                 throw std::runtime_error("existing RPM differs from release asset: " + cached.string());
@@ -531,10 +493,8 @@ std::vector<fs::path> Store::sync(
     auto d = dir(t);
     fs::create_directories(d);
 
-    struct Staging {
-        fs::path path;
-        ~Staging() { std::error_code ec; fs::remove_all(path, ec); }
-    } staging{make_staging_dir(d, t.slug())};
+    libdnf5::utils::fs::TempDir staging(d, ".staging-");
+    const auto & staging_path = staging.get_path();
 
     std::set<std::string> wanted;
     std::vector<fs::path> paths;
@@ -549,7 +509,7 @@ std::vector<fs::path> Store::sync(
             throw std::runtime_error("duplicate asset name: " + a.name);
         }
         auto p = d / a.name;
-        auto staged = staging.path / a.name;
+        auto staged = staging_path / a.name;
         if (!prepared.empty()) {
             fs::create_hard_link(prepared / a.name, staged);
         } else if (fs::exists(p)) {
@@ -563,7 +523,7 @@ std::vector<fs::path> Store::sync(
                 throw std::runtime_error("downloaded RPM has unexpected size: " + a.name);
             }
         }
-        auto [group, inserted] = groups.try_emplace(base_url, staging.path / ("group-" + std::to_string(groups.size())));
+        auto [group, inserted] = groups.try_emplace(base_url, staging_path / ("group-" + std::to_string(groups.size())));
         if (inserted) {
             fs::create_directories(group->second);
         }
@@ -579,11 +539,11 @@ std::vector<fs::path> Store::sync(
     for (const auto & [url, group] : groups) {
         run_command({createrepo_cmd, "--quiet", "--no-database", "--baseurl", url, group.string()});
     }
-    auto staged_metadata = staging.path / "repodata";
+    auto staged_metadata = staging_path / "repodata";
     if (groups.size() == 1) {
         fs::rename(groups.begin()->second / "repodata", staged_metadata);
     } else {
-        std::vector<std::string> args{"mergerepo_c", "--no-database", "--all", "--outputdir", staging.path.string()};
+        std::vector<std::string> args{"mergerepo_c", "--no-database", "--all", "--outputdir", staging_path.string()};
         for (const auto & [url, group] : groups) {
             args.push_back("--repo");
             args.push_back("file://" + group.string());

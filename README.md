@@ -118,4 +118,5 @@ The test directory is left for inspection.
 
 ## Security note
 
-Release RPMs are fetched over HTTPS but are not GPG-verified (`gpgcheck=0`); only track projects you trust.
+Release RPMs are fetched over HTTPS but are not GPG-verified by default (`gpgcheck=0`); only track projects you trust.
+`gh install` displays a warning before installation.
