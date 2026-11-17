@@ -3,20 +3,20 @@
 #include <curl/curl.h>
 
 #include <nlohmann/json.hpp>
+#include <libdnf5/base/base.hpp>
+#include <libdnf5/conf/config_main.hpp>
 #include <libdnf5/conf/config_parser.hpp>
+#include <libdnf5/plugin/utils.hpp>
+#include <libdnf5/repo/file_downloader.hpp>
 
-#include <cstdio>
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
+#include <exception>
 #include <memory>
+#include <map>
+#include <optional>
 #include <stdexcept>
-
-#ifndef GH_CONFIG_FILE
-#define GH_CONFIG_FILE "/etc/dnf/libdnf5-plugins/gh.conf"
-#endif
-
-#ifndef GH_TOKEN_FILE
-#define GH_TOKEN_FILE "/etc/dnf/libdnf5-plugins/gh.d/token.conf"
-#endif
 
 namespace ghplugin {
 
@@ -42,6 +42,15 @@ std::vector<Release> parse_releases(const std::string & json) {
 
 namespace {
 
+std::optional<std::string> environment_token() {
+    for (const char * var : {"GITHUB_TOKEN", "GH_TOKEN"}) {
+        if (const char * value = std::getenv(var); value && *value) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
 struct CurlGlobal {
     CurlGlobal() { curl_global_init(CURL_GLOBAL_DEFAULT); }
     ~CurlGlobal() { curl_global_cleanup(); }
@@ -57,45 +66,89 @@ size_t write_string(char * ptr, size_t size, size_t nmemb, void * userdata) {
     return size * nmemb;
 }
 
-size_t write_file(char * ptr, size_t size, size_t nmemb, void * userdata) {
-    return std::fwrite(ptr, size, nmemb, static_cast<FILE *>(userdata));
+template <typename T>
+void set_curl_option(CURL * handle, CURLoption option, T value) {
+    auto result = curl_easy_setopt(handle, option, value);
+    if (result != CURLE_OK) {
+        throw std::runtime_error(std::string("cannot configure GitHub request: ") + curl_easy_strerror(result));
+    }
 }
 
-CurlPtr make_handle(const std::string & token, curl_slist *& headers, bool api) {
+void configure_network(CURL * handle, const libdnf5::ConfigMain & config) {
+    const auto set_string = [handle](CURLoption option, const libdnf5::OptionString & value) {
+        if (!value.empty() && !value.get_value().empty()) {
+            set_curl_option(handle, option, value.get_value().c_str());
+        }
+    };
+    if (!config.get_proxy_option().empty() && config.get_proxy_option().get_value() != "_none_") {
+        set_string(CURLOPT_PROXY, config.get_proxy_option());
+    }
+    set_string(CURLOPT_PROXYUSERNAME, config.get_proxy_username_option());
+    set_string(CURLOPT_PROXYPASSWORD, config.get_proxy_password_option());
+    set_string(CURLOPT_CAINFO, config.get_sslcacert_option());
+    set_string(CURLOPT_SSLCERT, config.get_sslclientcert_option());
+    set_string(CURLOPT_SSLKEY, config.get_sslclientkey_option());
+    set_string(CURLOPT_PROXY_CAINFO, config.get_proxy_sslcacert_option());
+    set_string(CURLOPT_PROXY_SSLCERT, config.get_proxy_sslclientcert_option());
+    set_string(CURLOPT_PROXY_SSLKEY, config.get_proxy_sslclientkey_option());
+    const auto sslverify = config.get_sslverify_option().get_value();
+    const auto proxy_sslverify = config.get_proxy_sslverify_option().get_value();
+    set_curl_option(handle, CURLOPT_SSL_VERIFYPEER, sslverify ? 1L : 0L);
+    set_curl_option(handle, CURLOPT_SSL_VERIFYHOST, sslverify ? 2L : 0L);
+    set_curl_option(handle, CURLOPT_PROXY_SSL_VERIFYPEER, proxy_sslverify ? 1L : 0L);
+    set_curl_option(handle, CURLOPT_PROXY_SSL_VERIFYHOST, proxy_sslverify ? 2L : 0L);
+
+    long auth = 0;
+    for (const auto & method : config.get_proxy_auth_method_option().get_value()) {
+        if (method == "any") auth |= CURLAUTH_ANY;
+        else if (method == "basic") auth |= CURLAUTH_BASIC;
+        else if (method == "digest") auth |= CURLAUTH_DIGEST;
+        else if (method == "digest_ie") auth |= CURLAUTH_DIGEST_IE;
+        else if (method == "negotiate") auth |= CURLAUTH_NEGOTIATE;
+        else if (method == "ntlm") auth |= CURLAUTH_NTLM;
+        else if (method == "ntlm_wb") auth |= CURLAUTH_NTLM_WB;
+        else if (method != "none") throw std::runtime_error("unsupported proxy authentication method: " + method);
+    }
+    set_curl_option(handle, CURLOPT_PROXYAUTH, auth);
+    auto ip = config.get_ip_resolve_option().get_value();
+    std::transform(ip.begin(), ip.end(), ip.begin(), [](unsigned char ch) { return std::tolower(ch); });
+    const long ip_mode = ip == "4" || ip == "ipv4" ? CURL_IPRESOLVE_V4 :
+                         ip == "6" || ip == "ipv6" ? CURL_IPRESOLVE_V6 : CURL_IPRESOLVE_WHATEVER;
+    set_curl_option(handle, CURLOPT_IPRESOLVE, ip_mode);
+    const auto timeout = config.get_timeout_option().get_value();
+    set_curl_option(handle, CURLOPT_CONNECTTIMEOUT, timeout > 0 ? static_cast<long>(timeout) : 0L);
+    set_curl_option(handle, CURLOPT_LOW_SPEED_TIME, timeout > 0 ? static_cast<long>(timeout) : 0L);
+    set_curl_option(handle, CURLOPT_LOW_SPEED_LIMIT, static_cast<long>(config.get_minrate_option().get_value()));
+}
+
+CurlPtr make_handle(const std::string & token, curl_slist *& headers, const libdnf5::ConfigMain & config) {
     static CurlGlobal global;
     CurlPtr h(curl_easy_init());
     if (!h) {
         throw std::runtime_error("failed to initialize libcurl");
     }
+    configure_network(h.get(), config);
     headers = curl_slist_append(headers, "User-Agent: dnf5-plugin-gh");
-    if (api) {
-        headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
-        headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
-        if (!token.empty()) {
-            headers = curl_slist_append(headers, ("Authorization: Bearer " + token).c_str());
-        }
+    headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+    headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
+    if (!token.empty()) {
+        headers = curl_slist_append(headers, ("Authorization: Bearer " + token).c_str());
     }
     curl_easy_setopt(h.get(), CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(h.get(), CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h.get(), CURLOPT_CONNECTTIMEOUT, 10L);
-    curl_easy_setopt(h.get(), CURLOPT_LOW_SPEED_LIMIT, 1024L);
-    curl_easy_setopt(h.get(), CURLOPT_LOW_SPEED_TIME, 30L);
     return h;
 }
 
 }  // namespace
 
-std::string resolve_github_token(
-    const std::filesystem::path & config_file, const std::filesystem::path & token_file) {
-    for (const char * var : {"GITHUB_TOKEN", "GH_TOKEN"}) {
-        if (const char * value = std::getenv(var); value && *value) {
-            return value;
-        }
+std::string resolve_github_token(const std::vector<std::filesystem::path> & config_dirs) {
+    if (auto token = environment_token()) {
+        return *token;
     }
 
-    const auto private_path = token_file.empty() ? std::filesystem::path(GH_TOKEN_FILE) : token_file;
-    const auto legacy_path = config_file.empty() ? std::filesystem::path(GH_CONFIG_FILE) : config_file;
-    for (const auto & path : {private_path, legacy_path}) {
+    std::string token;
+    for (const auto & directory : config_dirs) {
+        const auto path = directory / "gh.conf";
         std::error_code ec;
         const bool exists = std::filesystem::exists(path, ec);
         if (ec) {
@@ -104,25 +157,51 @@ std::string resolve_github_token(
         if (!exists) {
             continue;
         }
-
         libdnf5::ConfigParser parser;
         parser.read(path.string());
         if (parser.has_option("main", "token")) {
-            return parser.get_value("main", "token");
+            token = parser.get_value("main", "token");
+        }
+        break;
+    }
+
+    std::map<std::string, std::filesystem::path> files;
+    for (const auto & directory : config_dirs) {
+        const auto dropins = directory / "gh.d";
+        std::error_code ec;
+        std::filesystem::directory_iterator entries(dropins, ec);
+        if (ec == std::errc::no_such_file_or_directory) {
+            continue;
+        }
+        if (ec) {
+            throw std::filesystem::filesystem_error("cannot read GitHub plugin drop-ins", dropins, ec);
+        }
+        for (const auto & entry : entries) {
+            if (entry.path().extension() == ".conf" && entry.is_regular_file()) {
+                files.try_emplace(entry.path().filename().string(), entry.path());
+            }
         }
     }
-    return {};
+    for (const auto & [name, path] : files) {
+        libdnf5::ConfigParser parser;
+        parser.read(path.string());
+        if (parser.has_option("main", "token")) {
+            token = parser.get_value("main", "token");
+        }
+    }
+    return token;
 }
 
-Client::Client(std::string api_base) : api_base(std::move(api_base)) {
-    token = resolve_github_token();
+Client::Client(libdnf5::Base & base, std::string api_base)
+    : api_base(std::move(api_base)), base(base) {
+    token = resolve_github_token(libdnf5::plugin::get_config_dirs(base));
 }
 
 std::vector<Release> Client::fetch_releases(const std::string & owner, const std::string & repo) {
     std::string url = api_base + "/repos/" + owner + "/" + repo + "/releases?per_page=100";
     std::string body;
     curl_slist * headers = nullptr;
-    auto h = make_handle(token, headers, true);
+    auto h = make_handle(token, headers, base.get_config());
     curl_easy_setopt(h.get(), CURLOPT_URL, url.c_str());
     curl_easy_setopt(h.get(), CURLOPT_WRITEFUNCTION, write_string);
     curl_easy_setopt(h.get(), CURLOPT_WRITEDATA, &body);
@@ -139,7 +218,7 @@ std::vector<Release> Client::fetch_releases(const std::string & owner, const std
     if (status == 403 || status == 429) {
         throw std::runtime_error(
             "GitHub API rate limit or access denied (HTTP " + std::to_string(status) +
-            "); set GITHUB_TOKEN or configure token in " GH_TOKEN_FILE);
+            "); set GITHUB_TOKEN or configure a GitHub plugin token");
     }
     if (status != 200) {
         throw std::runtime_error("GitHub API returned HTTP " + std::to_string(status));
@@ -150,25 +229,18 @@ std::vector<Release> Client::fetch_releases(const std::string & owner, const std
 void Client::download(const std::string & url, const std::filesystem::path & dest) {
     auto tmp = dest;
     tmp += ".part";
-    std::unique_ptr<FILE, int (*)(FILE *)> f(std::fopen(tmp.c_str(), "wb"), std::fclose);
-    if (!f) {
-        throw std::runtime_error("cannot write " + tmp.string());
-    }
-    curl_slist * headers = nullptr;
-    auto h = make_handle(token, headers, false);
-    curl_easy_setopt(h.get(), CURLOPT_URL, url.c_str());
-    curl_easy_setopt(h.get(), CURLOPT_WRITEFUNCTION, write_file);
-    curl_easy_setopt(h.get(), CURLOPT_WRITEDATA, f.get());
-    CURLcode rc = curl_easy_perform(h.get());
-    long status = 0;
-    curl_easy_getinfo(h.get(), CURLINFO_RESPONSE_CODE, &status);
-    curl_slist_free_all(headers);
-    f.reset();
-    if (rc != CURLE_OK || status != 200) {
-        std::filesystem::remove(tmp);
-        throw std::runtime_error(
-            "download of " + url +
-            " failed: " + (rc != CURLE_OK ? std::string(curl_easy_strerror(rc)) : "HTTP " + std::to_string(status)));
+    try {
+        libdnf5::repo::FileDownloader downloader(base);
+        downloader.set_resume(false);
+        downloader.add(url, tmp.string());
+        downloader.download();
+    } catch (...) {
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        if (ec) {
+            std::throw_with_nested(std::filesystem::filesystem_error("cannot remove failed download", tmp, ec));
+        }
+        throw;
     }
     std::filesystem::rename(tmp, dest);
 }

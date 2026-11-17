@@ -4,6 +4,8 @@
 #include "store.hpp"
 #include "workflows.hpp"
 
+#include <libdnf5/base/base.hpp>
+
 #undef NDEBUG
 #include <cassert>
 #include <cstdlib>
@@ -168,36 +170,48 @@ int main() {
     unsetenv("GITHUB_TOKEN");
     unsetenv("GH_TOKEN");
     auto token_config = tmp / "gh.conf";
-    auto private_token_config = tmp / "gh.d" / "token.conf";
+    auto dropins = tmp / "gh.d";
+    auto private_token_config = dropins / "token.conf";
+    auto vendor = tmp / "vendor";
+    const std::vector<std::filesystem::path> config_dirs{tmp, vendor};
     {
         std::ofstream config(token_config);
         config << "[main]\nenabled = 1\ntoken = config-token\n";
     }
-    assert(resolve_github_token(token_config, private_token_config) == "config-token");
-    std::filesystem::create_directory(private_token_config.parent_path());
+    assert(resolve_github_token(config_dirs) == "config-token");
+    std::filesystem::create_directories(dropins);
+    std::filesystem::create_directories(vendor / "gh.d");
+    std::ofstream(vendor / "gh.d" / "token.conf") << "[main]\ntoken = masked-token\n";
+    std::ofstream(vendor / "gh.d" / "00-vendor.conf") << "[main]\ntoken = vendor-token\n";
+    std::ofstream(dropins / "ignore.txt") << "[main]\ntoken = ignored-token\n";
     {
         std::ofstream config(private_token_config);
         config << "[main]\ntoken = private-token\n";
     }
-    assert(resolve_github_token(token_config, private_token_config) == "private-token");
+    assert(resolve_github_token(config_dirs) == "private-token");
+    std::ofstream(dropins / "zz-override.conf") << "[main]\ntoken = override-token\n";
+    assert(resolve_github_token(config_dirs) == "override-token");
+    std::filesystem::remove(dropins / "zz-override.conf");
     {
         std::ofstream config(private_token_config);
         config << "[main]\n";
     }
-    assert(resolve_github_token(token_config, private_token_config) == "config-token");
+    assert(resolve_github_token(config_dirs) == "vendor-token");
     {
         std::ofstream config(private_token_config);
         config << "[main]\ntoken = private-token\n";
     }
     setenv("GH_TOKEN", "environment-token", 1);
-    assert(resolve_github_token(token_config, private_token_config) == "environment-token");
+    assert(resolve_github_token(config_dirs) == "environment-token");
     setenv("GITHUB_TOKEN", "preferred-token", 1);
-    assert(resolve_github_token(token_config, private_token_config) == "preferred-token");
+    assert(resolve_github_token(config_dirs) == "preferred-token");
     unsetenv("GITHUB_TOKEN");
     unsetenv("GH_TOKEN");
-    std::filesystem::remove(private_token_config);
+    std::filesystem::remove_all(dropins);
+    std::filesystem::remove_all(vendor);
+    assert(resolve_github_token(config_dirs) == "config-token");
     std::filesystem::remove(token_config);
-    assert(resolve_github_token(token_config, private_token_config).empty());
+    assert(resolve_github_token(config_dirs).empty());
     if (old_github_token) {
         setenv("GITHUB_TOKEN", old_github_token->c_str(), 1);
     }
@@ -219,7 +233,8 @@ int main() {
     std::ofstream(sync_dir / "notes.txt") << "keep";
     const std::vector<Asset> sync_assets{{"foo-2-1.x86_64.rpm", "https://example.test/foo-2-1.x86_64.rpm", 3, "foo"}};
     setenv("GITHUB_TOKEN", "test-token", 1);
-    Client client;
+    libdnf5::Base base;
+    Client client(base);
     if (old_github_token) {
         setenv("GITHUB_TOKEN", old_github_token->c_str(), 1);
     } else {

@@ -46,8 +46,6 @@ target_link_libraries(gh PRIVATE ghcore ${LIBDNF5_LIBRARIES})
 set(DNF5_PLUGIN_DIR "${CMAKE_INSTALL_FULL_LIBDIR}/dnf5/plugins" CACHE PATH "dnf5 plugin directory")
 set(LIBDNF5_PLUGIN_DIR "${CMAKE_INSTALL_FULL_LIBDIR}/libdnf5/plugins" CACHE PATH "libdnf5 plugin directory")
 set(LIBDNF5_PLUGIN_CONFIG_DIR "${CMAKE_INSTALL_FULL_SYSCONFDIR}/dnf/libdnf5-plugins" CACHE PATH "libdnf5 plugin configuration directory")
-target_compile_definitions(ghcore PRIVATE GH_CONFIG_FILE="${LIBDNF5_PLUGIN_CONFIG_DIR}/gh.conf")
-target_compile_definitions(ghcore PRIVATE GH_TOKEN_FILE="${LIBDNF5_PLUGIN_CONFIG_DIR}/gh.d/token.conf")
 install(TARGETS gh_cmd_plugin LIBRARY DESTINATION ${DNF5_PLUGIN_DIR})
 install(TARGETS gh LIBRARY DESTINATION ${LIBDNF5_PLUGIN_DIR})
 install(FILES gh.conf DESTINATION ${LIBDNF5_PLUGIN_CONFIG_DIR}

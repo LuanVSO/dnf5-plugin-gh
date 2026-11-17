@@ -150,7 +150,7 @@ public:
             store.relocate_repo_configs(tracked);
             relocate_loaded_baseurls(tracked);
         }
-        Client client;
+        Client client(ctx.get_base());
         auto arch = ctx.get_base().get_vars()->get_value("arch");
         for (const auto & spec : specs->get_value()) {
             auto plan = fetch_install_plan(client, spec, arch, prerelease->get_value(), pattern->get_value());
@@ -275,7 +275,7 @@ public:
 
     void run() override {
         auto lock = store.lock();
-        Client client;
+        Client client(get_context().get_base());
         auto arch = get_context().get_base().get_vars()->get_value("arch");
         auto targets = resolve_targets(specs->get_value());
         if (targets.empty()) {

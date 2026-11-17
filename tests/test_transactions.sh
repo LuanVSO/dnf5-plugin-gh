@@ -8,7 +8,6 @@ libplugin="$(realpath "$3")"
 test_dir="$(cd "$(dirname "$0")" && pwd)"
 arch="$(uname -m)"
 plugin_dir="$(rpm --eval '%{_libdir}')/dnf5/plugins"
-ca_bundle="${GH_TEST_CA_BUNDLE:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}"
 
 if [[ -n "$(ls -A "$work")" ]]; then
     echo "Test directory must be empty: $work" >&2
@@ -19,6 +18,10 @@ mkdir -p "$work"/{rpm,root,varlib/dnf5-gh/modrinth_code,varlib/dnf/plugins/gh,re
 cp "$plugin" "$work/plugins/gh_cmd_plugin.so"
 cp "$libplugin" "$work/libplugins/gh.so"
 cp "$test_dir/../gh.conf" "$work/libconf/gh.conf"
+mkdir -p "$work/libconf/gh.d"
+printf '[main]\ntoken=older-token\n' > "$work/libconf/gh.d/10-old.conf"
+printf '[main]\ntoken=integration-test-token\n' > "$work/libconf/gh.d/80-custom.conf"
+chmod 600 "$work/libconf/gh.d/10-old.conf" "$work/libconf/gh.d/80-custom.conf"
 echo 0.23.1 > "$work/version"
 printf '[test]\nname=test\nbaseurl=file:///nonexistent\nenabled=0\ngpgcheck=0\n' > "$work/repoconf/test.repo"
 cat > "$work/package.spec" <<'EOF'
@@ -61,31 +64,41 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test_dir="$2"
     arch="$3"
     plugin_dir="$4"
-    ca_bundle="$5"
     mount --make-rprivate /
     ip link set lo up
     mount --bind "$work/varlib" /var/lib
     mount --bind "$work/repoconf" /etc/yum.repos.d
     mount --bind "$work/plugins" "$plugin_dir"
     mount --bind "$work/hosts" /etc/hosts
-    mount --bind "$work/cert.pem" "$ca_bundle"
     if test -e /etc/dnf/libdnf5-plugins/gh.conf; then
         mount --bind "$work/libconf/gh.conf" /etc/dnf/libdnf5-plugins/gh.conf
     fi
-    unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy GITHUB_TOKEN GH_TOKEN
+    unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy NO_PROXY no_proxy GITHUB_TOKEN GH_TOKEN
     python3 "$test_dir/mock_github.py" "$work" "$arch" &
     server=$!
     trap "kill $server; wait $server || true" EXIT
     for i in {1..50}; do
-        if curl -fsS https://api.github.com/repos/modrinth/code/releases?per_page=100 >/dev/null 2>&1; then break; fi
+        if curl --cacert "$work/cert.pem" -fsS https://api.github.com/repos/modrinth/code/releases?per_page=100 >/dev/null 2>&1; then break; fi
         sleep .1
     done
-    curl -fsS https://api.github.com/repos/modrinth/code/releases?per_page=100 >/dev/null
+    curl --cacert "$work/cert.pem" -fsS https://api.github.com/repos/modrinth/code/releases?per_page=100 >/dev/null
+    touch "$work/require-token"
     options=(--installroot="$work/root" --use-host-config --releasever=45 --setopt=reposdir="$work/repoconf"
-             --setopt=pluginpath="$work/libplugins" --setopt=pluginconfpath="$work/libconf")
+             --setopt=pluginpath="$work/libplugins" --setopt=pluginconfpath="$work/libconf"
+             --setopt=sslcacert="$work/cert.pem")
     dnf5() {
         timeout --signal=TERM --kill-after=5s 120s dnf5 "$@"
     }
+    if dnf5 "${options[@]}" --setopt=sslcacert=/nonexistent --nogpgcheck -y gh install modrinth/code >"$work/invalid-ca.log" 2>&1; then
+        echo "Install unexpectedly succeeded with an invalid CA file" >&2
+        exit 1
+    fi
+    grep -q "request to GitHub failed" "$work/invalid-ca.log"
+    if dnf5 "${options[@]}" --setopt=proxy=http://127.0.0.1:1 --nogpgcheck -y gh install modrinth/code >"$work/proxy.log" 2>&1; then
+        echo "Install unexpectedly succeeded with an unreachable proxy" >&2
+        exit 1
+    fi
+    grep -q "request to GitHub failed" "$work/proxy.log"
     dnf5 "${options[@]}" --nogpgcheck -y gh install --store "$work/stored" modrinth/code
     test -f "$work/stored/transaction.json"
     test ! -e /var/lib/dnf5-gh
@@ -108,6 +121,13 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     dnf5 "${options[@]}" -y gh remove modrinth/code
     test ! -e "$state"
     test ! -e "$repo"
+    before_requests=$(wc -l < "$work/requests")
+    if dnf5 "${options[@]}" --setopt=sslcacert= --setopt=sslverify=false --nogpgcheck --assumeno gh install modrinth/code >"$work/insecure.log" 2>&1; then
+        echo "Declined install unexpectedly succeeded" >&2
+        exit 1
+    fi
+    test "$(wc -l < "$work/requests")" -gt "$before_requests"
+    test -s "$work/asset-requests"
     if dnf5 "${options[@]}" --nogpgcheck --assumeno gh install modrinth/code; then
         echo "Declined install unexpectedly succeeded" >&2
         exit 1
@@ -115,6 +135,7 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test ! -e "$state"
     test ! -e "$repo"
     dnf5 "${options[@]}" --nogpgcheck -y gh install --store "$work/stored-again" modrinth/code
+    test -s "$work/asset-requests"
     rm "$work/repoconf/gh:modrinth:code.repo"
     dnf5 "${options[@]}" --nogpgcheck -y gh install modrinth/code
     rpm --root "$work/root" -q modrinth-app
@@ -336,4 +357,4 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test ! -e "$state"
     test ! -e "$repo"
     test ! -d /var/lib/dnf/plugins/gh/modrinth_code
-' _ "$work" "$test_dir" "$arch" "$plugin_dir" "$ca_bundle"
+' _ "$work" "$test_dir" "$arch" "$plugin_dir"

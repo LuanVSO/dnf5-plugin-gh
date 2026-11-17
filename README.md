@@ -50,8 +50,8 @@ local metadata on each use, while GitHub itself is queried only after the
 24-hour interval.
 
 Set `GITHUB_TOKEN` (or `GH_TOKEN`) to avoid API rate limits; use `sudo -E` to keep it.
-Alternatively, create `/etc/dnf/libdnf5-plugins/gh.d/token.conf`, owned by root
-with permissions `0600`, containing:
+Alternatively, create a file such as `/etc/dnf/libdnf5-plugins/gh.d/token.conf`,
+owned by root with permissions `0600`, containing:
 
     [main]
     token = YOUR_TOKEN
@@ -60,7 +60,12 @@ Create the `gh.d` directory owned by root with permissions `0700` before adding
 the file, so the token is protected while the file is being created.
 Environment variables take precedence over this file. The libdnf plugin config
 `/etc/dnf/libdnf5-plugins/gh.conf` must be readable by all users and must not
-contain a token.
+contain a token. The plugin reads `gh.d/*.conf` from DNF's `plugin_conf_dir`
+directories (or `pluginconfpath` when configured). Files are processed by
+filename in alphabetical order; later token settings override earlier ones.
+If the same filename occurs in multiple directories, the first directory wins,
+as with DNF configuration drop-ins. The existing `gh.d/token.conf` remains
+supported. A token in a drop-in overrides the legacy `gh.conf` token.
 
 If upgrading from a version that stored a token in `gh.conf`, move the token to
 the private file **before upgrading or changing the permissions**. Remove the
@@ -69,6 +74,12 @@ to fix existing installations. The old token location is still read for
 compatibility, but a token left there will be exposed if the file is readable
 by other users. RPM may preserve an existing modified configuration on upgrade;
 check and update its permissions after removing the token.
+
+GitHub API and asset requests use DNF's main network settings for the proxy,
+proxy authentication, TLS verification and certificates, IP resolution, timeout
+and minimum transfer rate. These settings also apply to automatic refreshes.
+Disabling `sslverify` disables certificate and hostname verification for GitHub
+requests; configured client certificates may be presented to remote servers.
 
 `gh install` also supports dnf5's `--store PATH` option. It prepares the local
 repository and records the project even though the transaction is only stored,
@@ -103,8 +114,7 @@ Pass an empty disposable directory and the built plugin:
 
     bash tests/test_transactions.sh "$(mktemp -d)" "$PWD/build/gh_cmd_plugin.so" "$PWD/build/gh.so"
 
-The test directory is left for inspection. On systems with a different curl CA
-bundle path, set `GH_TEST_CA_BUNDLE` to that path.
+The test directory is left for inspection.
 
 ## Security note
 

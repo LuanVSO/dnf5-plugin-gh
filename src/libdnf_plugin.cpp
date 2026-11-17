@@ -57,7 +57,7 @@ public:
             auto lock = store.lock();
             const auto now = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
-            ghplugin::Client client;
+            ghplugin::Client client(get_base());
             for (auto & t : store.list()) {
                 try {
                     migrate_loaded_repo(store, t);

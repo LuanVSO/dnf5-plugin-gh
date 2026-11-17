@@ -10,6 +10,9 @@ work, arch = sys.argv[1:]
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith(("/assets/", "/alternate/")):
+            if self.headers.get("Authorization"):
+                self.send_error(400)
+                return
             with open(os.path.join(work, "asset-requests"), "a") as log:
                 log.write(self.path + "\n")
             if os.path.exists(os.path.join(work, "fail-asset")):
@@ -29,6 +32,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if self.path != "/repos/modrinth/code/releases?per_page=100":
             self.send_error(404)
+            return
+        if os.path.exists(os.path.join(work, "require-token")) and self.headers.get("Authorization") != "Bearer integration-test-token":
+            self.send_error(401)
             return
         with open(os.path.join(work, "requests"), "a") as log:
             log.write("release\n")
