@@ -140,6 +140,23 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     rm "$work/repoconf/gh:modrinth:code.repo"
     dnf5 "${options[@]}" --nogpgcheck -y gh install modrinth/code
     rpm --root "$work/root" -q modrinth-app
+    before_assets=$(wc -l < "$work/asset-requests")
+    before_requests=$(wc -l < "$work/requests")
+    before_metadata=$(sha256sum /var/lib/dnf/plugins/gh/modrinth_code/repodata/repomd.xml)
+    python3 -c "import json,sys,time; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]=int(time.time())-120; open(p,\"w\").write(json.dumps(d))" "$state"
+    before_checked=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"last_checked\"])" "$state")
+    touch "$work/fail-asset"
+    dnf5 "${options[@]}" gh update modrinth/code > "$work/unchanged-update.log" 2>&1
+    grep -q "modrinth/code: up to date (v0.23.1)" "$work/unchanged-update.log"
+    test "$(wc -l < "$work/requests")" -eq "$((before_requests + 1))"
+    test "$(wc -l < "$work/asset-requests")" -eq "$before_assets"
+    test "$(sha256sum /var/lib/dnf/plugins/gh/modrinth_code/repodata/repomd.xml)" = "$before_metadata"
+    python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[\"last_checked\"] > int(sys.argv[2])" "$state" "$before_checked"
+    python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"last_checked\"]=0; open(p,\"w\").write(json.dumps(d))" "$state"
+    dnf5 "${options[@]}" --nogpgcheck -y update
+    test "$(wc -l < "$work/requests")" -eq "$((before_requests + 2))"
+    test "$(wc -l < "$work/asset-requests")" -eq "$before_assets"
+    rm "$work/fail-asset"
     mkdir -p /var/lib/dnf5-gh
     mv /var/lib/dnf/plugins/gh/modrinth_code /var/lib/dnf5-gh/modrinth_code
     sed -i "s@/var/lib/dnf/plugins/gh/@/var/lib/dnf5-gh/@" "$repo"
@@ -176,10 +193,16 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test "$(rpm --root "$work/root" -q --qf "%{VERSION}" modrinth-app)" = 0.23.1
     test "$(dnf5 "${options[@]}" repoquery --installed --queryformat "%{from_repo}" modrinth-app)" = "gh:modrinth:code"
     rm /var/lib/dnf/plugins/gh/modrinth_code/repodata/gh-assets.json
-    cp "$work/fixtures/Modrinth.App-0.23.1-1.$arch.rpm" /var/lib/dnf/plugins/gh/modrinth_code/
+    before_assets=$(wc -l < "$work/asset-requests")
     dnf5 "${options[@]}" --nogpgcheck -y update
     test -f /var/lib/dnf/plugins/gh/modrinth_code/repodata/gh-assets.json
+    test "$(wc -l < "$work/asset-requests")" -eq "$((before_assets + 1))"
     test -z "$(find /var/lib/dnf/plugins/gh/modrinth_code -type f -name "*.rpm" -print)"
+    rm /var/lib/dnf/plugins/gh/modrinth_code/repodata/repomd.xml
+    before_assets=$(wc -l < "$work/asset-requests")
+    dnf5 "${options[@]}" --nogpgcheck -y update
+    test -f /var/lib/dnf/plugins/gh/modrinth_code/repodata/repomd.xml
+    test "$(wc -l < "$work/asset-requests")" -eq "$((before_assets + 1))"
     dnf5 "${options[@]}" gh list > "$work/list-initial.out"
     grep -q "^  packages:   modrinth-app$" "$work/list-initial.out"
     python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"packages\"]=[\"Modrinth.App\"]; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/modrinth_code/state.json

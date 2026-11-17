@@ -279,7 +279,7 @@ int main() {
     auto createrepo = tmp / "createrepo";
     {
         std::ofstream script(createrepo);
-        script << "#!/bin/sh\nmkdir \"$5/repodata\"\necho new > \"$5/repodata/new\"\n";
+        script << "#!/bin/sh\nmkdir \"$5/repodata\"\necho new > \"$5/repodata/new\"\ntouch \"$5/repodata/repomd.xml\"\n";
     }
     std::filesystem::permissions(createrepo, std::filesystem::perms::owner_exec,
                                  std::filesystem::perm_options::add);
@@ -292,6 +292,8 @@ int main() {
     assert(std::filesystem::exists(sync_dir / "notes.txt"));
     assert(std::filesystem::is_directory(sync_dir / "keep.rpm"));
     assert(sync_store.has_remote_metadata(sync_tracked));
+    std::filesystem::remove(sync_dir / "repodata" / "repomd.xml");
+    assert(!sync_store.has_remote_metadata(sync_tracked));
 
     Tracked package_state{"owner", "repo", "v1", false, {"foo", "bar"}};
     PackageNamesByRepo removed{{store.legacy_repo_id(package_state), {"foo"}}};

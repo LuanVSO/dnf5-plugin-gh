@@ -384,7 +384,8 @@ void Store::remove(const Tracked & t) const {
 }
 
 bool Store::has_remote_metadata(const Tracked & t) const {
-    return fs::is_regular_file(dir(t) / "repodata" / "gh-assets.json");
+    const auto metadata = dir(t) / "repodata";
+    return fs::is_regular_file(metadata / "gh-assets.json") && fs::is_regular_file(metadata / "repomd.xml");
 }
 
 void Store::clean_rpms() const {

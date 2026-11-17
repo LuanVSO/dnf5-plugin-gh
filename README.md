@@ -34,6 +34,9 @@ Every eligible dnf5 invocation automatically checks each enabled tracked
 GitHub repository at most once every 24 hours. Repositories are refreshed
 before resolving transactions, so available updates can be installed normally.
 `dnf5 gh update` forces an immediate check, regardless of the interval.
+When the selected release tag is unchanged and remote metadata exists, the
+check does not download RPMs or rebuild metadata. Changes to assets under the
+same tag are therefore not detected until the metadata is rebuilt.
 If preparing a refresh fails, a warning is printed and the previous repository
 remains available; the next update retries. Existing repositories are migrated
 to remote asset locations on their next successful refresh; their old RPMs are

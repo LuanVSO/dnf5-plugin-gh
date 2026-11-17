@@ -22,6 +22,11 @@ std::string refresh_repository(Store & store, Client & client, Tracked & tracked
     }
     const auto & release = releases[*index];
     auto old = tracked.tag;
+    if (release.tag == old && store.has_remote_metadata(tracked)) {
+        record_release(store, tracked, release.tag);
+        return tracked.slug() + ": up to date (" + old + ")";
+    }
+
     auto prepared = store.prepare(client, tracked, compatible_assets(release, arch, tracked.patterns));
     std::vector<Asset> assets;
     std::set<std::string> found;
@@ -40,9 +45,7 @@ std::string refresh_repository(Store & store, Client & client, Tracked & tracked
     if (assets.empty()) {
         throw std::runtime_error("release " + release.tag + " lacks the tracked packages");
     }
-    if (release.tag != old || !store.has_remote_metadata(tracked)) {
-        store.sync(client, tracked, assets, prepared->path());
-    }
+    store.sync(client, tracked, assets, prepared->path());
     record_release(store, tracked, release.tag);
     return release.tag == old ? tracked.slug() + ": up to date (" + old + ")"
                               : tracked.slug() + ": " + old + " -> " + release.tag;
