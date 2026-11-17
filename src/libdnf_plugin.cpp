@@ -27,7 +27,7 @@
 namespace {
 
 std::exception_ptr last_exception;
-constexpr libdnf5::plugin::Version VERSION{0, 1, 5};
+constexpr libdnf5::plugin::Version VERSION{GH_VERSION_MAJOR, GH_VERSION_MINOR, GH_VERSION_PATCH};
 constexpr const char * ATTRIBUTES[]{nullptr};
 
 class GhLibdnfPlugin : public libdnf5::plugin::IPlugin {
@@ -44,65 +44,24 @@ public:
         if (std::getenv("DNF5_GH_OWN_TRANSACTION")) {
             return;
         }
-        auto & base = get_base();
-        const auto & config = base.get_config();
+        const auto & config = get_base().get_config();
         if (geteuid() != 0 || config.get_cacheonly_option().get_value() != "none") {
             return;
         }
-        if (config.get_installroot_option().get_value() != "/" &&
-            !config.get_use_host_config_option().get_value()) {
+        if (!targets_host_config()) {
             std::cerr << "GitHub refresh skipped for an alternate installroot without --use-host-config\n";
             return;
         }
         try {
             ghplugin::Store store;
             auto lock = store.lock();
-            auto tracked = store.list();
             const auto now = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             ghplugin::Client client;
-            for (auto & t : tracked) {
+            for (auto & t : store.list()) {
                 try {
-                    libdnf5::repo::RepoQuery legacy(base);
-                    legacy.filter_id(store.legacy_repo_id(t));
-                    if (store.migrate_repo(t)) {
-                        bool enabled = true;
-                        for (auto & repo : legacy) {
-                            enabled = repo->get_config().get_enabled_option().get_value();
-                        }
-                        base.get_repo_sack()->create_repos_from_file(store.repo_file(t).string());
-                        libdnf5::repo::RepoQuery replacement(base);
-                        replacement.filter_id(store.repo_id(t));
-                        if (replacement.empty()) {
-                            throw std::runtime_error("cannot load migrated repository");
-                        }
-                        for (auto & repo : replacement) {
-                            if (!enabled) {
-                                repo->disable();
-                            }
-                        }
-                        for (auto & repo : legacy) {
-                            repo->disable();
-                        }
-                    }
-                    libdnf5::repo::RepoQuery repos(base);
-                    repos.filter_id(store.repo_id(t));
-                    repos.filter_enabled(true);
-                    repos.filter_type(libdnf5::repo::Repo::Type::AVAILABLE);
-                    for (auto & repo : repos) {
-                        auto & baseurl = repo->get_config().get_baseurl_option();
-                        auto urls = baseurl.get_value();
-                        if (store.relocate_baseurls(t, urls)) {
-                            baseurl.set(baseurl.get_priority(), urls);
-                        }
-                        if (ghplugin::refresh_due(t, now) || !store.has_remote_metadata(t)) {
-                            std::cerr << "GitHub: "
-                                      << ghplugin::refresh_repository(store, client, t, base.get_vars()->get_value("arch"))
-                                      << '\n';
-                        }
-                        // Existing repo files may still have metadata_expire=never.
-                        repo->expire();
-                    }
+                    migrate_loaded_repo(store, t);
+                    refresh_loaded_repo(store, client, t, now);
                 } catch (const std::exception & ex) {
                     std::cerr << "Warning: GitHub refresh failed for " << t.slug() << ": " << ex.what()
                               << "; using existing repository metadata\n";
@@ -114,13 +73,9 @@ public:
     }
 
     void pre_transaction(const libdnf5::base::Transaction & transaction) override {
-        removed_packages.clear();
-        remaining_packages.clear();
-        installed_packages.clear();
+        reset_tracking();
         const auto & config = get_base().get_config();
-        if (geteuid() != 0 || std::getenv("DNF5_GH_OWN_TRANSACTION") ||
-            (config.get_installroot_option().get_value() != "/" &&
-             !config.get_use_host_config_option().get_value())) {
+        if (geteuid() != 0 || std::getenv("DNF5_GH_OWN_TRANSACTION") || !targets_host_config()) {
             return;
         }
         try {
@@ -161,35 +116,24 @@ public:
                 }
             }
             if (config.get_skip_system_repo_lock_option().get_value()) {
-                removed_packages.clear();
-                installed_packages.clear();
-                remaining_packages.clear();
+                reset_tracking();
                 std::cerr << "Warning: GitHub tracking update skipped because the system repository lock is disabled\n";
                 return;
             }
             const auto ids = get_base().get_transaction_history()->list_transaction_ids();
             previous_history_id = ids.empty() ? 0 : ids.back();
         } catch (const std::exception & ex) {
-            removed_packages.clear();
-            remaining_packages.clear();
-            installed_packages.clear();
+            reset_tracking();
             std::cerr << "Warning: cannot prepare GitHub tracking update: " << ex.what() << '\n';
         }
     }
 
     void post_transaction(const libdnf5::base::Transaction &) override {
-        const auto & config = get_base().get_config();
-        if (geteuid() == 0 && !std::getenv("DNF5_GH_OWN_TRANSACTION") &&
-            (config.get_installroot_option().get_value() == "/" ||
-             config.get_use_host_config_option().get_value())) {
+        if (geteuid() == 0 && !std::getenv("DNF5_GH_OWN_TRANSACTION") && targets_host_config()) {
             try {
                 ghplugin::Store store;
                 auto lock = store.lock();
-                for (const auto & tracked : store.list()) {
-                    if (store.has_remote_metadata(tracked)) {
-                        store.remove_rpms(tracked);
-                    }
-                }
+                store.clean_rpms();
             } catch (const std::exception & ex) {
                 std::cerr << "Warning: cannot clean GitHub repository RPMs: " << ex.what() << '\n';
             }
@@ -202,9 +146,7 @@ public:
             const auto latest = get_base().get_transaction_history()->get_latest_transaction();
             if (latest.get_id() <= previous_history_id ||
                 latest.get_state() != libdnf5::transaction::TransactionState::OK) {
-                removed_packages.clear();
-                remaining_packages.clear();
-                installed_packages.clear();
+                reset_tracking();
                 return;
             }
             ghplugin::Store store;
@@ -225,12 +167,74 @@ public:
         } catch (const std::exception & ex) {
             std::cerr << "Warning: cannot update GitHub tracking after transaction: " << ex.what() << '\n';
         }
+        reset_tracking();
+    }
+
+private:
+    // Whether the transaction runs against the host's own configuration and state.
+    bool targets_host_config() {
+        const auto & config = get_base().get_config();
+        return config.get_installroot_option().get_value() == "/" ||
+               config.get_use_host_config_option().get_value();
+    }
+
+    // Replaces a legacy-named repository with its migrated one, keeping its enabled state.
+    void migrate_loaded_repo(const ghplugin::Store & store, const ghplugin::Tracked & t) {
+        auto & base = get_base();
+        libdnf5::repo::RepoQuery legacy(base);
+        legacy.filter_id(store.legacy_repo_id(t));
+        if (!store.migrate_repo(t)) {
+            return;
+        }
+        bool enabled = true;
+        for (auto & repo : legacy) {
+            enabled = repo->get_config().get_enabled_option().get_value();
+        }
+        base.get_repo_sack()->create_repos_from_file(store.repo_file(t).string());
+        libdnf5::repo::RepoQuery replacement(base);
+        replacement.filter_id(store.repo_id(t));
+        if (replacement.empty()) {
+            throw std::runtime_error("cannot load migrated repository");
+        }
+        for (auto & repo : replacement) {
+            if (!enabled) {
+                repo->disable();
+            }
+        }
+        for (auto & repo : legacy) {
+            repo->disable();
+        }
+    }
+
+    void refresh_loaded_repo(
+        ghplugin::Store & store, ghplugin::Client & client, ghplugin::Tracked & t, std::int64_t now) {
+        auto & base = get_base();
+        libdnf5::repo::RepoQuery repos(base);
+        repos.filter_id(store.repo_id(t));
+        repos.filter_enabled(true);
+        repos.filter_type(libdnf5::repo::Repo::Type::AVAILABLE);
+        for (auto & repo : repos) {
+            auto & baseurl = repo->get_config().get_baseurl_option();
+            auto urls = baseurl.get_value();
+            if (store.relocate_baseurls(t, urls)) {
+                baseurl.set(baseurl.get_priority(), urls);
+            }
+            if (ghplugin::refresh_due(t, now) || !store.has_remote_metadata(t)) {
+                std::cerr << "GitHub: "
+                          << ghplugin::refresh_repository(store, client, t, base.get_vars()->get_value("arch"))
+                          << '\n';
+            }
+            // Existing repo files may still have metadata_expire=never.
+            repo->expire();
+        }
+    }
+
+    void reset_tracking() {
         removed_packages.clear();
         remaining_packages.clear();
         installed_packages.clear();
     }
 
-private:
     ghplugin::PackageNamesByRepo removed_packages;
     ghplugin::PackageNamesByRepo remaining_packages;
     ghplugin::PackageNamesByRepo installed_packages;

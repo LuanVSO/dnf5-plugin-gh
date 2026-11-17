@@ -409,6 +409,14 @@ bool Store::has_remote_metadata(const Tracked & t) const {
     return fs::is_regular_file(dir(t) / "repodata" / "gh-assets.json");
 }
 
+void Store::clean_rpms() const {
+    for (const auto & t : list()) {
+        if (has_remote_metadata(t)) {
+            remove_rpms(t);
+        }
+    }
+}
+
 void Store::remove_rpms(const Tracked & t) const {
     for (const auto & entry : fs::recursive_directory_iterator(dir(t))) {
         if (entry.path().extension() == ".rpm" && !entry.is_directory()) {

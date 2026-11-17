@@ -33,7 +33,8 @@ namespace {
 
 std::exception_ptr last_exception;
 
-constexpr dnf5::PluginVersion PLUGIN_VERSION{.major = 0, .minor = 1, .micro = 5};
+constexpr dnf5::PluginVersion PLUGIN_VERSION{
+    .major = GH_VERSION_MAJOR, .minor = GH_VERSION_MINOR, .micro = GH_VERSION_PATCH};
 constexpr const char * attrs[]{"author.name", "author.email", "description", nullptr};
 constexpr const char * attrs_value[]{"dnf5-plugin-gh contributors", "", "Install and update RPMs from GitHub releases"};
 
@@ -76,6 +77,21 @@ protected:
         });
     }
 
+    // Points already loaded repository configs at the current repository directory.
+    void relocate_loaded_baseurls(const Tracked & t) {
+        for (const auto & id : {store.repo_id(t), store.legacy_repo_id(t)}) {
+            libdnf5::repo::RepoQuery repos(get_context().get_base());
+            repos.filter_id(id);
+            for (auto & repo : repos) {
+                auto & baseurl = repo->get_config().get_baseurl_option();
+                auto urls = baseurl.get_value();
+                if (store.relocate_baseurls(t, urls)) {
+                    baseurl.set(baseurl.get_priority(), urls);
+                }
+            }
+        }
+    }
+
     std::vector<Tracked> resolve_targets(const std::vector<std::string> & slugs) {
         if (slugs.empty()) {
             return store.list();
@@ -99,7 +115,6 @@ public:
         : GhCommand(ctx, "install"), removal(removal) {}
 
     void set_argument_parser() override {
-        auto & ctx = get_context();
         get_argument_parser_command()->set_description("Install RPMs from the latest GitHub release of <owner>/<repo>");
         specs = std::make_unique<libdnf5::cli::session::StringArgumentList>(
             *this, "owner/repo", "GitHub repositories to install from", ArgPositional::AT_LEAST_ONE);
@@ -113,7 +128,6 @@ public:
             "GLOB", ".*", false, "\n");
         // dnf5 identifies transactional commands by the presence of its store option.
         dnf5::create_store_option(*this);
-        (void)ctx;
     }
 
     void configure() override {
@@ -127,17 +141,7 @@ public:
         removal.lock = store.lock();
         for (const auto & tracked : store.list()) {
             store.relocate_repo_configs(tracked);
-            for (const auto & id : {store.repo_id(tracked), store.legacy_repo_id(tracked)}) {
-                libdnf5::repo::RepoQuery repos(ctx.get_base());
-                repos.filter_id(id);
-                for (auto & repo : repos) {
-                    auto & baseurl = repo->get_config().get_baseurl_option();
-                    auto urls = baseurl.get_value();
-                    if (store.relocate_baseurls(tracked, urls)) {
-                        baseurl.set(baseurl.get_priority(), urls);
-                    }
-                }
-            }
+            relocate_loaded_baseurls(tracked);
         }
         Client client;
         auto arch = ctx.get_base().get_vars()->get_value("arch");
@@ -164,12 +168,8 @@ public:
             if (repos.empty()) {
                 throw std::runtime_error("cannot load repository for " + spec);
             }
+            relocate_loaded_baseurls(t);
             for (auto & repo : repos) {
-                auto & baseurl = repo->get_config().get_baseurl_option();
-                auto urls = baseurl.get_value();
-                if (store.relocate_baseurls(t, urls)) {
-                    baseurl.set(baseurl.get_priority(), urls);
-                }
                 repo->enable();
                 repo->expire();
             }
@@ -464,11 +464,7 @@ public:
             try {
                 Store store;
                 auto lock = removal.lock ? nullptr : store.lock();
-                for (const auto & tracked : store.list()) {
-                    if (store.has_remote_metadata(tracked)) {
-                        store.remove_rpms(tracked);
-                    }
-                }
+                store.clean_rpms();
             } catch (const std::exception & ex) {
                 get_context().print_error(std::string("Warning: cannot clean GitHub repository RPMs: ") + ex.what());
             }

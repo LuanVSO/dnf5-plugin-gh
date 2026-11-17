@@ -79,6 +79,8 @@ public:
     std::unique_ptr<PreparedAssets> prepare(Client & client, const Tracked & t, const std::vector<Asset> & assets) const;
     bool has_remote_metadata(const Tracked & t) const;
     void remove_rpms(const Tracked & t) const;
+    // Drops the cached rpm files of every tracked repository that serves them remotely.
+    void clean_rpms() const;
 
     // Publishes metadata referring to release assets and returns their repository locations.
     std::vector<std::filesystem::path> sync(

@@ -29,11 +29,17 @@ target_include_directories(ghcore PUBLIC ${CURL_INCLUDE_DIRS} ${RPM_INCLUDE_DIRS
 add_library(gh_cmd_plugin MODULE src/plugin.cpp)
 set_target_properties(gh_cmd_plugin PROPERTIES PREFIX "")
 target_compile_definitions(gh_cmd_plugin PRIVATE GETTEXT_DOMAIN="dnf5-plugin-gh")
+target_compile_definitions(gh_cmd_plugin PRIVATE
+    GH_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} GH_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    GH_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 target_include_directories(gh_cmd_plugin PRIVATE ${LIBDNF5_INCLUDE_DIRS} /usr/include/dnf5)
 target_link_libraries(gh_cmd_plugin PRIVATE ghcore ${LIBDNF5_LIBRARIES})
 
 add_library(gh MODULE src/libdnf_plugin.cpp)
 set_target_properties(gh PROPERTIES PREFIX "")
+target_compile_definitions(gh PRIVATE
+    GH_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} GH_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    GH_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 target_include_directories(gh PRIVATE ${LIBDNF5_INCLUDE_DIRS})
 target_link_libraries(gh PRIVATE ghcore ${LIBDNF5_LIBRARIES})
 

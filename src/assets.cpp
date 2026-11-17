@@ -30,11 +30,10 @@ bool is_rpm_name(const std::string & filename) {
 }  // namespace
 
 std::string rpm_arch(const std::string & filename, const std::string & system_arch) {
-    static const std::string ext = ".rpm";
-    if (filename.size() <= ext.size() || filename.compare(filename.size() - ext.size(), ext.size(), ext) != 0) {
+    if (!is_rpm_name(filename)) {
         return {};
     }
-    auto stem = filename.substr(0, filename.size() - ext.size());
+    auto stem = filename.substr(0, filename.size() - 4);
 
     if (has_arch_suffix(stem, system_arch)) {
         return system_arch;
