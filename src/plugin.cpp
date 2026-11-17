@@ -42,6 +42,7 @@ struct PendingRemoval {
     Store store;
     std::unique_ptr<StoreLock> lock;
     std::vector<Tracked> projects;
+    std::vector<Tracked> fresh;  // newly tracked by 'gh install'; dropped unless the transaction commits
     std::int64_t previous_history_id = 0;
 };
 
@@ -92,6 +93,11 @@ protected:
         }
     }
 
+    std::int64_t last_history_id() {
+        const auto ids = get_context().get_base().get_transaction_history()->list_transaction_ids();
+        return ids.empty() ? 0 : ids.back();
+    }
+
     std::vector<Tracked> resolve_targets(const std::vector<std::string> & slugs) {
         if (slugs.empty()) {
             return store.list();
@@ -139,6 +145,7 @@ public:
         ctx.set_load_system_repo(true);
         ctx.set_load_available_repos(dnf5::Context::LoadAvailableRepos::ENABLED);
         removal.lock = store.lock();
+        removal.previous_history_id = last_history_id();
         for (const auto & tracked : store.list()) {
             store.relocate_repo_configs(tracked);
             relocate_loaded_baseurls(tracked);
@@ -147,7 +154,12 @@ public:
         auto arch = ctx.get_base().get_vars()->get_value("arch");
         for (const auto & spec : specs->get_value()) {
             auto plan = fetch_install_plan(client, spec, arch, prerelease->get_value(), pattern->get_value());
-            Tracked t = store.find(plan.owner + "/" + plan.repo).value_or(Tracked{plan.owner, plan.repo});
+            auto existing = store.find(plan.owner + "/" + plan.repo);
+            Tracked t = existing.value_or(Tracked{plan.owner, plan.repo});
+            // A stored transaction is replayed later and still needs its repository.
+            if (!existing && ctx.get_transaction_store_path().empty()) {
+                removal.fresh.push_back(t);
+            }
             auto prepared = store.prepare(client, t, plan.candidates);
             auto chosen = choose(spec, prepared->assets);
             say("Using " + spec + " " + plan.release.tag);
@@ -391,8 +403,7 @@ public:
             }
             return;
         }
-        const auto ids = get_context().get_base().get_transaction_history()->list_transaction_ids();
-        removal.previous_history_id = ids.empty() ? 0 : ids.back();
+        removal.previous_history_id = last_history_id();
         for (const auto & t : targets) {
             for (const auto & p : t.packages) {
                 goal->add_remove(p);
@@ -469,32 +480,41 @@ public:
                 get_context().print_error(std::string("Warning: cannot clean GitHub repository RPMs: ") + ex.what());
             }
         }
-        if (removal.projects.empty()) {
+        if (removal.projects.empty() && removal.fresh.empty()) {
             return;
         }
         try {
-            auto history = get_context().get_base().get_transaction_history();
-            const auto ids = history->list_transaction_ids();
-            if (ids.empty() || ids.back() <= removal.previous_history_id) {
-                return;
-            }
-            const auto latest = history->get_latest_transaction();
-            if (latest.get_description() != get_context().get_cmdline()) {
-                get_context().print_error("Warning: cannot identify the GitHub removal transaction; tracking retained");
-                return;
-            }
-            if (latest.get_state() != libdnf5::transaction::TransactionState::OK) {
-                return;
-            }
-            for (const auto & t : removal.projects) {
-                removal.store.remove(t);
+            if (transaction_succeeded()) {
+                for (const auto & t : removal.projects) {
+                    removal.store.remove(t);
+                }
+            } else {
+                // A declined or failed install must not leave a new enabled repository behind.
+                for (const auto & t : removal.fresh) {
+                    removal.store.remove(t);
+                }
             }
         } catch (const std::exception & ex) {
-            get_context().print_error(std::string("Warning: cannot remove GitHub tracking after transaction: ") + ex.what());
+            get_context().print_error(std::string("Warning: cannot update GitHub tracking after transaction: ") + ex.what());
         }
     }
 
 private:
+    // Whether a new transaction for this command line was recorded as completed.
+    bool transaction_succeeded() {
+        auto history = get_context().get_base().get_transaction_history();
+        const auto ids = history->list_transaction_ids();
+        if (ids.empty() || ids.back() <= removal.previous_history_id) {
+            return false;
+        }
+        const auto latest = history->get_latest_transaction();
+        if (latest.get_description() != get_context().get_cmdline()) {
+            get_context().print_error("Warning: cannot identify the GitHub transaction; tracking retained");
+            return false;
+        }
+        return latest.get_state() == libdnf5::transaction::TransactionState::OK;
+    }
+
     PendingRemoval removal;
 };
 

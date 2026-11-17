@@ -108,6 +108,12 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     dnf5 "${options[@]}" -y gh remove modrinth/code
     test ! -e "$state"
     test ! -e "$repo"
+    if dnf5 "${options[@]}" --nogpgcheck --assumeno gh install modrinth/code; then
+        echo "Declined install unexpectedly succeeded" >&2
+        exit 1
+    fi
+    test ! -e "$state"
+    test ! -e "$repo"
     dnf5 "${options[@]}" --nogpgcheck -y gh install --store "$work/stored-again" modrinth/code
     rm "$work/repoconf/gh:modrinth:code.repo"
     dnf5 "${options[@]}" --nogpgcheck -y gh install modrinth/code
