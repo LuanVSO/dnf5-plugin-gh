@@ -59,6 +59,23 @@ protected:
 
     void say(const std::string & msg) { get_context().print_info(msg); }
 
+    // Completes the positional argument with the slugs of tracked repositories.
+    void complete_tracked(libdnf5::cli::session::StringArgumentList & list) {
+        list.get_arg()->set_complete_hook_func([this](const char * current) {
+            std::vector<std::string> out;
+            const std::string prefix = current ? current : "";
+            try {
+                for (const auto & t : store.list()) {
+                    if (t.slug().compare(0, prefix.size(), prefix) == 0) {
+                        out.push_back(t.slug());
+                    }
+                }
+            } catch (const std::exception &) {
+            }
+            return out;
+        });
+    }
+
     std::vector<Tracked> resolve_targets(const std::vector<std::string> & slugs) {
         if (slugs.empty()) {
             return store.list();
@@ -234,6 +251,7 @@ public:
             "Refresh the local repositories of tracked GitHub projects (then run 'dnf5 upgrade')");
         specs = std::make_unique<libdnf5::cli::session::StringArgumentList>(
             *this, "owner/repo", "Tracked repositories (default: all)", ArgPositional::UNLIMITED);
+        complete_tracked(*specs);
     }
 
     void configure() override {
@@ -279,6 +297,7 @@ public:
         get_argument_parser_command()->set_description("List tracked GitHub projects and their details");
         specs = std::make_unique<libdnf5::cli::session::StringArgumentList>(
             *this, "owner/repo", "Tracked repositories (default: all)", ArgPositional::UNLIMITED);
+        complete_tracked(*specs);
     }
 
     void configure() override {
@@ -320,6 +339,7 @@ public:
             "Remove the packages installed from a GitHub repository and stop tracking it");
         specs = std::make_unique<libdnf5::cli::session::StringArgumentList>(
             *this, "owner/repo", "Tracked repositories", ArgPositional::AT_LEAST_ONE);
+        complete_tracked(*specs);
         // Registering the option also makes dnf5 acquire a write lock.
         dnf5::create_store_option(*this);
     }
