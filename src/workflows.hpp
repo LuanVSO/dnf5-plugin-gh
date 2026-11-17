@@ -17,13 +17,15 @@ struct InstallPlan {
     Release release;
     std::vector<Asset> candidates;
     bool prerelease = false;
+    std::vector<std::string> patterns;
 };
 
 InstallPlan make_install_plan(
     const std::vector<Release> & releases, const std::string & spec, const std::string & arch,
-    bool include_prerelease);
+    bool include_prerelease, const std::vector<std::string> & patterns = {});
 InstallPlan fetch_install_plan(
-    Client & client, const std::string & spec, const std::string & arch, bool include_prerelease);
+    Client & client, const std::string & spec, const std::string & arch, bool include_prerelease,
+    const std::vector<std::string> & patterns = {});
 std::vector<Asset> unique_package_assets(const std::vector<Asset> & assets);
 void replace_tracked_packages(Tracked & tracked, const std::vector<Asset> & assets);
 using PackageNamesByRepo = std::map<std::string, std::set<std::string>>;

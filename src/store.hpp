@@ -19,6 +19,7 @@ struct Tracked {
     bool prerelease = false;
     std::vector<std::string> packages;  // rpm package names to follow (not file names)
     std::int64_t last_checked = 0;
+    std::vector<std::string> patterns;  // glob patterns on rpm file names; empty matches all
 
     std::string slug() const { return owner + "/" + repo; }
 };

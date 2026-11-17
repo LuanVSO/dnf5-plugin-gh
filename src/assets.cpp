@@ -1,5 +1,7 @@
 #include "assets.hpp"
 
+#include <fnmatch.h>
+
 #include <regex>
 #include <stdexcept>
 #include <string_view>
@@ -20,6 +22,11 @@ bool has_arch_suffix(const std::string & stem, std::string_view arch) {
     return separator == '.' || separator == '-' || separator == '_';
 }
 
+bool is_rpm_name(const std::string & filename) {
+    static const std::string ext = ".rpm";
+    return filename.size() > ext.size() && filename.compare(filename.size() - ext.size(), ext.size(), ext) == 0;
+}
+
 }  // namespace
 
 std::string rpm_arch(const std::string & filename, const std::string & system_arch) {
@@ -38,9 +45,33 @@ std::string rpm_arch(const std::string & filename, const std::string & system_ar
     return {};
 }
 
-std::vector<Asset> compatible_assets(const Release & release, const std::string & arch) {
+bool matches_patterns(const std::string & name, const std::vector<std::string> & patterns) {
+    if (patterns.empty()) {
+        return true;
+    }
+    for (const auto & pattern : patterns) {
+        if (fnmatch(pattern.c_str(), name.c_str(), 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<Asset> compatible_assets(
+    const Release & release, const std::string & arch, const std::vector<std::string> & patterns) {
     std::vector<Asset> out;
     for (const auto & a : release.assets) {
+        if (!matches_patterns(a.name, patterns)) {
+            continue;
+        }
+        if (!patterns.empty()) {
+            // An explicit pattern replaces the arch and debug-package heuristics.
+            if (!is_rpm_name(a.name)) {
+                continue;
+            }
+            out.push_back(a);
+            continue;
+        }
         if (rpm_arch(a.name, arch).empty()) {
             continue;
         }
@@ -53,13 +84,14 @@ std::vector<Asset> compatible_assets(const Release & release, const std::string 
 }
 
 std::optional<size_t> pick_release(
-    const std::vector<Release> & releases, const std::string & arch, bool include_prerelease) {
+    const std::vector<Release> & releases, const std::string & arch, bool include_prerelease,
+    const std::vector<std::string> & patterns) {
     for (size_t i = 0; i < releases.size(); ++i) {
         const auto & r = releases[i];
         if (r.draft || (r.prerelease && !include_prerelease)) {
             continue;
         }
-        if (!compatible_assets(r, arch).empty()) {
+        if (!compatible_assets(r, arch, patterns).empty()) {
             return i;
         }
     }

@@ -1,5 +1,5 @@
 Name:           dnf5-plugin-gh
-Version:        0.1.5
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        DNF5 plugin to install and update RPMs from GitHub releases
 
@@ -49,6 +49,9 @@ install -d %{buildroot}%{_sharedstatedir}/dnf/plugins/gh
 %dir %{_sharedstatedir}/dnf/plugins/gh
 
 %changelog
+* Tue Nov 17 2026 dnf5-plugin-gh contributors - 0.2.0-1
+- Add gh install --pattern to select RPM assets by glob, remembered for upgrades
+
 * Mon Nov 16 2026 dnf5-plugin-gh contributors - 0.1.5-1
 - Repair repository URLs after moving local GitHub data
 

@@ -90,6 +90,10 @@ public:
             *this, "prerelease", '\0', "Consider pre-releases", false);
         all = std::make_unique<libdnf5::cli::session::BoolOption>(
             *this, "all", '\0', "Install every matching RPM asset without prompting", false);
+        pattern = std::make_unique<libdnf5::cli::session::AppendStringListOption>(
+            *this, "pattern", '\0',
+            "Glob matched against RPM file names to select assets; remembered for upgrades",
+            "GLOB", ".*", false, "\n");
         // dnf5 identifies transactional commands by the presence of its store option.
         dnf5::create_store_option(*this);
         (void)ctx;
@@ -121,7 +125,7 @@ public:
         Client client;
         auto arch = ctx.get_base().get_vars()->get_value("arch");
         for (const auto & spec : specs->get_value()) {
-            auto plan = fetch_install_plan(client, spec, arch, prerelease->get_value());
+            auto plan = fetch_install_plan(client, spec, arch, prerelease->get_value(), pattern->get_value());
             Tracked t = store.find(plan.owner + "/" + plan.repo).value_or(Tracked{plan.owner, plan.repo});
             auto prepared = store.prepare(client, t, plan.candidates);
             auto chosen = choose(spec, prepared->assets);
@@ -175,17 +179,18 @@ private:
     std::unique_ptr<libdnf5::cli::session::StringArgumentList> specs;
     std::unique_ptr<libdnf5::cli::session::BoolOption> prerelease;
     std::unique_ptr<libdnf5::cli::session::BoolOption> all;
+    std::unique_ptr<libdnf5::cli::session::AppendStringListOption> pattern;
     std::vector<std::pair<std::string, std::string>> selected;
     PendingRemoval & removal;
 
     // Reduces the candidate assets to the ones to install, one per package name.
     std::vector<Asset> choose(const std::string & spec, const std::vector<Asset> & candidates) {
         auto unique = unique_package_assets(candidates);
-        if (unique.size() == 1 || all->get_value()) {
+        if (unique.size() == 1 || all->get_value() || !pattern->get_value().empty()) {
             return unique;
         }
         if (!isatty(STDIN_FILENO)) {
-            throw std::runtime_error(spec + " has several rpm assets; use --all or run interactively");
+            throw std::runtime_error(spec + " has several rpm assets; use --all, --pattern or run interactively");
         }
         for (size_t i = 0; i < unique.size(); ++i) {
             std::cout << "  " << i + 1 << ") " << unique[i].name << "\n";

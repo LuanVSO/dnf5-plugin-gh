@@ -16,13 +16,13 @@ bool refresh_due(const Tracked & tracked, std::int64_t now) {
 std::string refresh_repository(Store & store, Client & client, Tracked & tracked, const std::string & arch) {
     store.migrate_repo(tracked);
     auto releases = client.fetch_releases(tracked.owner, tracked.repo);
-    auto index = pick_release(releases, arch, tracked.prerelease);
+    auto index = pick_release(releases, arch, tracked.prerelease, tracked.patterns);
     if (!index) {
         throw std::runtime_error("no release with an rpm for " + arch);
     }
     const auto & release = releases[*index];
     auto old = tracked.tag;
-    auto prepared = store.prepare(client, tracked, compatible_assets(release, arch));
+    auto prepared = store.prepare(client, tracked, compatible_assets(release, arch, tracked.patterns));
     std::vector<Asset> assets;
     std::set<std::string> found;
     for (const auto & asset : unique_package_assets(prepared->assets)) {

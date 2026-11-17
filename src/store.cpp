@@ -326,6 +326,7 @@ std::vector<Tracked> Store::list() const {
             t.repo = j.at("repo");
             t.tag = j.value("tag", "");
             t.prerelease = j.value("prerelease", false);
+            t.patterns = j.value("patterns", std::vector<std::string>{});
             t.packages = j.value("packages", std::vector<std::string>{});
             t.last_checked = j.value("last_checked", std::int64_t{0});
             std::map<std::string, std::set<std::string>> aliases;
@@ -384,7 +385,7 @@ void Store::save(const Tracked & t) const {
     fs::create_directories(dir(t));
     nlohmann::json j{
         {"owner", t.owner}, {"repo", t.repo}, {"tag", t.tag}, {"prerelease", t.prerelease},
-        {"packages", t.packages}, {"last_checked", t.last_checked}};
+        {"patterns", t.patterns}, {"packages", t.packages}, {"last_checked", t.last_checked}};
     auto temporary = dir(t) / "state.json.tmp";
     std::ofstream out(temporary);
     out << j.dump(2) << "\n";

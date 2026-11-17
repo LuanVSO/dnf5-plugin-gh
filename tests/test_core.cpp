@@ -54,6 +54,12 @@ int main() {
     assert(alternate_compatible[1].name == "winboat_0.9.2_x86_64.rpm");
     assert(alternate_compatible[2].name == "foo-2.0.0-noarch.rpm");
 
+    auto globbed = compatible_assets(alternate_names, "x86_64", {"*_x86_64.rpm", "*noarch*"});
+    assert(globbed.size() == 2 && globbed[0].name == "winboat_0.9.2_x86_64.rpm");
+    assert(compatible_assets(alternate_names, "x86_64", {"foo-2.0.0-aarch64*"}).size() == 1);
+    assert(compatible_assets(alternate_names, "x86_64", {"nomatch*"}).empty());
+    assert(!pick_release(releases, "x86_64", true, {"nomatch*"}));
+
     auto stable = pick_release(releases, "x86_64", false);
     assert(stable && releases[*stable].tag == "v2.0.0");
     auto pre = pick_release(releases, "x86_64", true);

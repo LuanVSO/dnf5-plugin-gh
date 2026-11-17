@@ -10,23 +10,25 @@ namespace ghplugin {
 
 InstallPlan make_install_plan(
     const std::vector<Release> & releases, const std::string & spec, const std::string & arch,
-    bool include_prerelease) {
+    bool include_prerelease, const std::vector<std::string> & patterns) {
     auto [owner, repo] = parse_slug(spec);
-    auto index = pick_release(releases, arch, include_prerelease);
+    auto index = pick_release(releases, arch, include_prerelease, patterns);
     if (!index) {
         throw std::runtime_error(
             "no release of " + spec + " has an rpm for " + arch +
+            (patterns.empty() ? "" : " matching the given pattern") +
             (include_prerelease ? "" : " (try --prerelease)"));
     }
 
     const auto & release = releases[*index];
-    return {std::move(owner), std::move(repo), release, compatible_assets(release, arch), include_prerelease};
+    return {std::move(owner), std::move(repo), release, compatible_assets(release, arch, patterns), include_prerelease, patterns};
 }
 
 InstallPlan fetch_install_plan(
-    Client & client, const std::string & spec, const std::string & arch, bool include_prerelease) {
+    Client & client, const std::string & spec, const std::string & arch, bool include_prerelease,
+    const std::vector<std::string> & patterns) {
     auto [owner, repo] = parse_slug(spec);
-    return make_install_plan(client.fetch_releases(owner, repo), spec, arch, include_prerelease);
+    return make_install_plan(client.fetch_releases(owner, repo), spec, arch, include_prerelease, patterns);
 }
 
 std::vector<Asset> unique_package_assets(const std::vector<Asset> & assets) {
@@ -100,6 +102,7 @@ std::vector<std::filesystem::path> install_release(
     }
 
     tracked.prerelease = plan.prerelease;
+    tracked.patterns = plan.patterns;
     replace_tracked_packages(tracked, selected);
 
     auto paths = store.sync(client, tracked, selected, prepared);
