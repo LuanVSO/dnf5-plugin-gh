@@ -12,9 +12,6 @@ namespace ghplugin {
 // Returns `arch` or "noarch" when the RPM asset name has a matching architecture suffix, otherwise empty.
 std::string rpm_arch(const std::string & filename, const std::string & arch);
 
-// Whether `name` matches any of the glob `patterns` (fnmatch); an empty list matches everything.
-bool matches_patterns(const std::string & name, const std::vector<std::string> & patterns);
-
 // Binary rpm assets installable on `arch` (matching arch or noarch; no debuginfo/debugsource)
 // whose file name matches `patterns`. When `patterns` is given, any .rpm asset matching one is
 // accepted regardless of architecture.

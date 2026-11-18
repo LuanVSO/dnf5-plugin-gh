@@ -19,7 +19,6 @@ struct Asset {
 
 struct Release {
     std::string tag;
-    std::string name;
     bool prerelease = false;
     bool draft = false;
     std::vector<Asset> assets;
@@ -33,14 +32,12 @@ std::string resolve_github_token(const std::vector<std::filesystem::path> & conf
 
 class Client {
 public:
-    // `api_base` is overridable for tests.
-    explicit Client(libdnf5::Base & base, std::string api_base = "https://api.github.com");
+    explicit Client(libdnf5::Base & base);
 
     std::vector<Release> fetch_releases(const std::string & owner, const std::string & repo);
     void download(const std::string & url, const std::filesystem::path & dest);
 
 private:
-    std::string api_base;
     std::string token;
     libdnf5::Base & base;
 };

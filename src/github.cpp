@@ -8,13 +8,13 @@
 #include <libdnf5/conf/config_parser.hpp>
 #include <libdnf5/plugin/utils.hpp>
 #include <libdnf5/repo/file_downloader.hpp>
+#include <libdnf5/utils/fs/utils.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <exception>
 #include <memory>
-#include <map>
 #include <optional>
 #include <stdexcept>
 
@@ -29,7 +29,6 @@ std::vector<Release> parse_releases(const std::string & json) {
     for (const auto & r : doc) {
         Release rel;
         rel.tag = r.value("tag_name", "");
-        rel.name = r.value("name", "");
         rel.prerelease = r.value("prerelease", false);
         rel.draft = r.value("draft", false);
         for (const auto & a : r.value("assets", nlohmann::json::array())) {
@@ -146,7 +145,7 @@ std::string resolve_github_token(const std::vector<std::filesystem::path> & conf
         return *token;
     }
 
-    std::string token;
+    libdnf5::ConfigParser parser;
     for (const auto & directory : config_dirs) {
         const auto path = directory / "gh.conf";
         std::error_code ec;
@@ -157,48 +156,36 @@ std::string resolve_github_token(const std::vector<std::filesystem::path> & conf
         if (!exists) {
             continue;
         }
-        libdnf5::ConfigParser parser;
         parser.read(path.string());
-        if (parser.has_option("main", "token")) {
-            token = parser.get_value("main", "token");
-        }
         break;
     }
 
-    std::map<std::string, std::filesystem::path> files;
+    std::vector<std::filesystem::path> dropin_dirs;
     for (const auto & directory : config_dirs) {
         const auto dropins = directory / "gh.d";
         std::error_code ec;
-        std::filesystem::directory_iterator entries(dropins, ec);
+        // DNF's file-list helper ignores directory-open errors.
+        std::filesystem::directory_iterator(dropins, ec);
         if (ec == std::errc::no_such_file_or_directory) {
             continue;
         }
         if (ec) {
             throw std::filesystem::filesystem_error("cannot read GitHub plugin drop-ins", dropins, ec);
         }
-        for (const auto & entry : entries) {
-            if (entry.path().extension() == ".conf" && entry.is_regular_file()) {
-                files.try_emplace(entry.path().filename().string(), entry.path());
-            }
-        }
+        dropin_dirs.push_back(dropins);
     }
-    for (const auto & [name, path] : files) {
-        libdnf5::ConfigParser parser;
+    for (const auto & path : libdnf5::utils::fs::create_sorted_file_list(dropin_dirs, ".conf")) {
         parser.read(path.string());
-        if (parser.has_option("main", "token")) {
-            token = parser.get_value("main", "token");
-        }
     }
-    return token;
+    return parser.has_option("main", "token") ? parser.get_value("main", "token") : std::string{};
 }
 
-Client::Client(libdnf5::Base & base, std::string api_base)
-    : api_base(std::move(api_base)), base(base) {
+Client::Client(libdnf5::Base & base) : base(base) {
     token = resolve_github_token(libdnf5::plugin::get_config_dirs(base));
 }
 
 std::vector<Release> Client::fetch_releases(const std::string & owner, const std::string & repo) {
-    std::string url = api_base + "/repos/" + owner + "/" + repo + "/releases?per_page=100";
+    std::string url = "https://api.github.com/repos/" + owner + "/" + repo + "/releases?per_page=100";
     std::string body;
     curl_slist * headers = nullptr;
     auto h = make_handle(token, headers, base.get_config());

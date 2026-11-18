@@ -27,6 +27,18 @@ bool is_rpm_name(const std::string & filename) {
     return filename.size() > ext.size() && filename.compare(filename.size() - ext.size(), ext.size(), ext) == 0;
 }
 
+bool matches_patterns(const std::string & name, const std::vector<std::string> & patterns) {
+    if (patterns.empty()) {
+        return true;
+    }
+    for (const auto & pattern : patterns) {
+        if (fnmatch(pattern.c_str(), name.c_str(), 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 std::string rpm_arch(const std::string & filename, const std::string & system_arch) {
@@ -42,18 +54,6 @@ std::string rpm_arch(const std::string & filename, const std::string & system_ar
         return "noarch";
     }
     return {};
-}
-
-bool matches_patterns(const std::string & name, const std::vector<std::string> & patterns) {
-    if (patterns.empty()) {
-        return true;
-    }
-    for (const auto & pattern : patterns) {
-        if (fnmatch(pattern.c_str(), name.c_str(), 0) == 0) {
-            return true;
-        }
-    }
-    return false;
 }
 
 std::vector<Asset> compatible_assets(

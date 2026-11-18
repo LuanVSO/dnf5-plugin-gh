@@ -19,7 +19,7 @@
 using namespace ghplugin;
 
 static const char * RELEASES = R"([
- {"tag_name":"v3.0.0-rc1","prerelease":true,"draft":false,"assets":[
+ {"tag_name":"v3.0.0-rc1","name":null,"prerelease":true,"draft":false,"assets":[
    {"name":"foo-3.0.0~rc1-1.x86_64.rpm","browser_download_url":"https://x/a","size":10}]},
  {"tag_name":"v2.1.0","prerelease":false,"draft":true,"assets":[
    {"name":"foo-2.1.0-1.x86_64.rpm","browser_download_url":"https://x/b","size":10}]},
@@ -216,6 +216,9 @@ int main() {
     std::ofstream(dropins / "zz-override.conf") << "[main]\ntoken = override-token\n";
     assert(resolve_github_token(config_dirs) == "override-token");
     std::filesystem::remove(dropins / "zz-override.conf");
+    std::ofstream(dropins / "zz-empty.conf") << "[main]\ntoken =\n";
+    assert(resolve_github_token(config_dirs).empty());
+    std::filesystem::remove(dropins / "zz-empty.conf");
     {
         std::ofstream config(private_token_config);
         config << "[main]\n";
@@ -236,6 +239,13 @@ int main() {
     assert(resolve_github_token(config_dirs) == "config-token");
     std::filesystem::remove(token_config);
     assert(resolve_github_token(config_dirs).empty());
+    std::ofstream(dropins) << "not a directory";
+    try {
+        resolve_github_token(config_dirs);
+        assert(false);
+    } catch (const std::filesystem::filesystem_error &) {
+    }
+    std::filesystem::remove(dropins);
     if (old_github_token) {
         setenv("GITHUB_TOKEN", old_github_token->c_str(), 1);
     }
