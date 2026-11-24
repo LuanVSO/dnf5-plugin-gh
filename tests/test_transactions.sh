@@ -204,7 +204,9 @@ unshare -Ur -m -n bash -eu -o pipefail -c '
     test -f /var/lib/dnf/plugins/gh/modrinth_code/repodata/repomd.xml
     test "$(wc -l < "$work/asset-requests")" -eq "$((before_assets + 1))"
     dnf5 "${options[@]}" gh list > "$work/list-initial.out"
+    grep -q "^modrinth/code$" "$work/list-initial.out"
     grep -q "^  packages:   modrinth-app$" "$work/list-initial.out"
+    grep -q "^  url:        https://github.com/modrinth/code$" "$work/list-initial.out"
     python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"packages\"]=[\"Modrinth.App\"]; open(p,\"w\").write(json.dumps(d))" /var/lib/dnf/plugins/gh/modrinth_code/state.json
     dnf5 "${options[@]}" gh list > "$work/list-legacy.out"
     grep -q "^  packages:   modrinth-app$" "$work/list-legacy.out"

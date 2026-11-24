@@ -33,6 +33,16 @@ namespace {
 
 std::exception_ptr last_exception;
 
+std::string terminal_link(const std::string & url, const std::string & label, bool enabled) {
+    const bool has_control_char = std::any_of(url.begin(), url.end(), [](unsigned char ch) {
+        return ch < 0x20 || ch == 0x7f;
+    });
+    if (!enabled || has_control_char) {
+        return label;
+    }
+    return "\x1b]8;;" + url + "\x1b\\" + label + "\x1b]8;;\x1b\\";
+}
+
 constexpr dnf5::PluginVersion PLUGIN_VERSION{
     .major = GH_VERSION_MAJOR, .minor = GH_VERSION_MINOR, .micro = GH_VERSION_PATCH};
 constexpr const char * attrs[]{"author.name", "author.email", "description", nullptr};
@@ -328,13 +338,17 @@ public:
             say("No tracked GitHub repositories.");
             return;
         }
+        const bool terminal_output = isatty(STDOUT_FILENO);
         for (const auto & t : targets) {
             std::string pk;
             for (const auto & p : t.packages) {
                 pk += (pk.empty() ? "" : ", ") + p;
             }
+            const auto url = "https://github.com/" + t.slug();
             get_context().print_output(
-                t.slug() + "\n  release:    " + t.tag + "\n  prerelease: " + (t.prerelease ? "yes" : "no") +
+                terminal_link(url, t.slug(), terminal_output) +
+                (terminal_output ? "" : "\n  url:        " + url) +
+                "\n  release:    " + t.tag + "\n  prerelease: " + (t.prerelease ? "yes" : "no") +
                 "\n  packages:   " + pk + "\n  repo id:    " + store.repo_id(t) + "\n  location:   " +
                 store.dir(t).string() + "\n");
         }
