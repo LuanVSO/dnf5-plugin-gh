@@ -42,6 +42,7 @@ Adds the `gh install`, `gh update`, `gh list` and `gh remove` commands.
 install -d %{buildroot}%{_sharedstatedir}/dnf/plugins/gh
 
 %files
+%license LICENSE
 %doc README.md
 %{_libdir}/dnf5/plugins/gh_cmd_plugin.so
 %{_libdir}/libdnf5/plugins/gh.so
