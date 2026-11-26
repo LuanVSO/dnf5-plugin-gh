@@ -5,16 +5,8 @@ A dnf5 plugin that installs and updates RPMs published as GitHub release assets.
 Each tracked project gets local `createrepo_c` metadata under
 `/var/lib/dnf/plugins/gh/<owner>_<repo>/` and a repo file `/etc/yum.repos.d/gh:<owner>:<repo>.repo`,
 so dnf5 resolves, upgrades and removes those packages natively.
-Data in the previous `/var/lib/dnf5-gh/` location is migrated automatically on
-the first eligible root invocation.
-Repository configurations still pointing to the old location are also repaired,
-including configurations left behind by an earlier migration.
 The metadata points to GitHub release assets: DNF downloads the packages needed
 for a transaction, and the local repository does not retain RPM files.
-New installs are recorded as originating from `gh:<owner>:<repo>`. A slash
-cannot be used in a dnf repository ID. Existing `gh-<owner>_<repo>` files are
-migrated when the project is refreshed or installed again; existing installed
-package origins are not rewritten.
 
 ## Commands
 
@@ -70,14 +62,6 @@ If the same filename occurs in multiple directories, the first directory wins,
 as with DNF configuration drop-ins. The existing `gh.d/token.conf` remains
 supported. A token in a drop-in overrides the legacy `gh.conf` token.
 
-If upgrading from a version that stored a token in `gh.conf`, move the token to
-the private file **before upgrading or changing the permissions**. Remove the
-token from `gh.conf`, then run `sudo chmod 644 /etc/dnf/libdnf5-plugins/gh.conf`
-to fix existing installations. The old token location is still read for
-compatibility, but a token left there will be exposed if the file is readable
-by other users. RPM may preserve an existing modified configuration on upgrade;
-check and update its permissions after removing the token.
-
 GitHub API and asset requests use DNF's main network settings for the proxy,
 proxy authentication, TLS verification and certificates, IP resolution, timeout
 and minimum transfer rate. These settings also apply to automatic refreshes.
@@ -118,6 +102,10 @@ Pass an empty disposable directory and the built plugin:
     bash tests/test_transactions.sh "$(mktemp -d)" "$PWD/build/gh_cmd_plugin.so" "$PWD/build/gh.so"
 
 The test directory is left for inspection.
+
+### rpm package
+alternatively, you can build an RPM package with the `update.sh` script, It requires `fedpkg`.
+you can install the package with `dnf5 install  ./results*/*/*/dnf5-plugin-gh-*.fc45.x86_64.rpm` and remove it with `dnf5 remove dnf5-plugin-gh`.
 
 ## Security note
 
